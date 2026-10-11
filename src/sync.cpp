@@ -146,9 +146,14 @@ bool ClockDiscipline::update(int64_t nowLocalUs) {
     if (elapsed <= 0) {
         return false;
     }
+    int64_t maxAdj = elapsed * kMaxSlewPpm / 1000000;
+    if (maxAdj == 0) {
+        // Called again within 250 us (core 1's loop spins much faster than that): let the
+        // elapsed time build up rather than rounding every step's correction down to nothing.
+        return false;
+    }
     lastUpdateUs_ = nowLocalUs;
     int64_t err = errorUs(nowLocalUs);
-    int64_t maxAdj = elapsed * kMaxSlewPpm / 1000000;
     int64_t adj = err > maxAdj ? maxAdj : (err < -maxAdj ? -maxAdj : err);
     if (adj == 0 && published_.driftPpb == target_.driftPpb) {
         return false;

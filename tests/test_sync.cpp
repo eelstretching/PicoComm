@@ -168,6 +168,22 @@ void testDiscipline() {
     }
     CHECK_EQ(d.errorUs(now), 0);
 
+    // Polled far more often than once per microsecond of correction (core 1 spins every few
+    // microseconds): the slew must still happen, at the same rate.
+    ClockModel t4 = t3;
+    t4.refOffsetUs += 1000;
+    d.setTarget(t4, now);
+    int64_t start = now;
+    while (d.errorUs(now) != 0 && now - start < 2000000) {
+        now += 7;
+        d.update(now);
+        uint64_t show = d.published().toShow(now);
+        CHECK(show > lastShow);
+        lastShow = show;
+    }
+    CHECK_EQ(d.errorUs(now), 0);
+    CHECK_NEAR(now - start, 250000, 5000);  // 1 ms at 4000 ppm
+
     // More than kStepThresholdUs off: step.
     ClockModel far = t3;
     far.refOffsetUs += 500000;
