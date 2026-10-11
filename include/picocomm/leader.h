@@ -128,6 +128,12 @@ class Leader {
     uint16_t sceneId_ = 0;
     uint64_t nextBeaconUs_ = 0;
 
+    // The last OVERRIDE, so a resend (the observer missed our ACK) isn't cued twice.
+    uint32_t lastOverrideIp_ = 0;
+    uint16_t lastOverridePort_ = 0;
+    uint16_t lastOverrideSeq_ = 0;
+    uint16_t lastOverrideCueId_ = 0;
+
     Member members_[kMaxFollowers];
 
     // The latest scene cue (effect, blackout, resume local) and brightness cue per group, resent

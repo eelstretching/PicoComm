@@ -418,6 +418,14 @@ void testSyncAndCues() {
         CHECK_EQ(obs.acks[0].cueId, d.delivered[0].cue.cueId);
         CHECK_EQ(d.delivered[0].cue.effect, (uint16_t)EffectId::TwinkleFox);
     }
+    // The same OVERRIDE again (same seq: the observer missed the ACK) is ACKed, not re-cued.
+    obs.override(leader.ip, o);
+    sim.run(1 * kSec);
+    CHECK_EQ(obs.acks.size(), 2u);
+    CHECK_EQ(d.delivered.size(), 1u);
+    if (obs.acks.size() == 2) {
+        CHECK_EQ(obs.acks[1].cueId, obs.acks[0].cueId);
+    }
 }
 
 void testLossyNetwork() {

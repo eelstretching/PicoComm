@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picocomm"
+version = "0.1.0"
+description = "Laptop tools for the PicoComm show network: watch, cue, clock, log, fake nodes"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+picocomm = "picocomm.cli:main"
+
+[tool.setuptools]
+packages = ["picocomm"]

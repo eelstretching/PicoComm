@@ -22,8 +22,18 @@ set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
+add_executable(judge judge/main.cpp)
+target_compile_options(judge PRIVATE -Wall)
+target_link_libraries(judge PRIVATE pico_stdlib)
+pico_enable_stdio_usb(judge 1)
+pico_enable_stdio_uart(judge 0)
+pico_add_extra_outputs(judge)
+
+# The bench images need the radio. Configuring for a board without one (e.g. -DPICO_BOARD=pico, for
+# a judge on an original Pico) builds the judge only.
 if(NOT PICO_CYW43_SUPPORTED)
-    message(FATAL_ERROR "PicoComm needs a board with a CYW43 radio (PICO_BOARD=${PICO_BOARD})")
+    message(WARNING "PICO_BOARD=${PICO_BOARD} has no CYW43 radio: building only the judge")
+    return()
 endif()
 
 add_subdirectory(../pico picocomm)
@@ -51,10 +61,3 @@ foreach(role leader follower)
     pico_enable_stdio_uart(${target} 0)
     pico_add_extra_outputs(${target})
 endforeach()
-
-add_executable(judge judge/main.cpp)
-target_compile_options(judge PRIVATE -Wall)
-target_link_libraries(judge PRIVATE pico_stdlib)
-pico_enable_stdio_usb(judge 1)
-pico_enable_stdio_uart(judge 0)
-pico_add_extra_outputs(judge)

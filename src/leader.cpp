@@ -292,18 +292,28 @@ void Leader::handleQuery(const uint8_t *data, uint32_t ip, uint16_t port) {
 }
 
 void Leader::handleOverride(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port) {
-    Override o;
-    decode(data, o);
-    Cue spec;
-    spec.kind = o.kind;
-    spec.transition = o.transition;
-    spec.effect = o.effect;
-    spec.transitionMs = o.transitionMs;
-    memcpy(spec.params, o.params, 8);
-    uint32_t lead = o.delayMs == 0 ? kDefaultLeadMs : o.delayMs;
-    uint16_t id = cue(o.targetGroupMask, spec, lead);
-    log("override from observer: cue %u, effect 0x%04x, groups %04x, in %lu ms", id, o.effect,
-        o.targetGroupMask, (unsigned long)lead);
+    uint16_t id;
+    if (lastOverrideCueId_ != 0 && ip == lastOverrideIp_ && port == lastOverridePort_ &&
+        h.seq == lastOverrideSeq_) {
+        id = lastOverrideCueId_;  // a resend: our ACK was lost, so just ACK again
+    } else {
+        Override o;
+        decode(data, o);
+        Cue spec;
+        spec.kind = o.kind;
+        spec.transition = o.transition;
+        spec.effect = o.effect;
+        spec.transitionMs = o.transitionMs;
+        memcpy(spec.params, o.params, 8);
+        uint32_t lead = o.delayMs == 0 ? kDefaultLeadMs : o.delayMs;
+        id = cue(o.targetGroupMask, spec, lead);
+        log("override from observer: cue %u, effect 0x%04x, groups %04x, in %lu ms", id, o.effect,
+            o.targetGroupMask, (unsigned long)lead);
+        lastOverrideIp_ = ip;
+        lastOverridePort_ = port;
+        lastOverrideSeq_ = h.seq;
+        lastOverrideCueId_ = id;
+    }
 
     Ack a;
     a.ackedType = PacketType::Override;
