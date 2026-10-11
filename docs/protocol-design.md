@@ -261,6 +261,23 @@ The measurement is how far apart those pulses land. Two ways to see it:
   `time_us_64()` and prints the spread per second over USB serial. A few lines of code, 1 µs
   resolution.
 
+Judge wiring (one row per prop; add GP5, GP6, ... for more):
+
+| Prop pin | Through | Judge pin |
+|---|---|---|
+| Prop A GP22 (pin 29) | 1 kΩ resistor | GP2 (pin 4) |
+| Prop B GP22 (pin 29) | 1 kΩ resistor | GP3 (pin 5) |
+| Prop C GP22 (pin 29) | 1 kΩ resistor | GP4 (pin 6) |
+| every prop's GND (pin 28) | wire | judge GND (pin 3 or 8) |
+
+GP22 is free on the Pico 2 W header (the radio uses GP23 to GP25 and GP29); on a
+universal-strip-controller board, use any spare GPIO. The resistors only protect against a pin
+accidentally set as an output on both ends; the 1 ms, once-a-second pulse doesn't care about them.
+Don't join 3V3 or VSYS between boards; each runs from its own USB power. Rather than per-pin
+interrupts, the judge should spin in a tight loop on `gpio_get_all()` and timestamp every change,
+so simultaneous edges don't queue behind each other. The judge prints, once a second, each prop's
+edge time relative to the first one.
+
 Then make it hard:
 
 - Load the network: stream video on the laptop over the same router.
