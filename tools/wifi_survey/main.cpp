@@ -5,8 +5,8 @@
 // the min/avg RSSI over the last 10 seconds, and round-trip times of ICMP pings to the gateway (the
 // show router), four pings a second with a 32-byte payload, the same size as a PicoComm packet.
 //
-// Press Enter at a prop to drop a numbered marker with a summary of the last 10 seconds, so a log
-// of the walk can be read back afterwards.
+// At a prop, press Enter and type the prop's name: that marks it with a summary of the last 10
+// seconds. Press s at the end of the walk to print every mark as a table to bring back inside.
 //
 // WiFi power saving is turned off, as PicoComm will run it (see docs/protocol-design.md). Ping
 // times with it left on would be dominated by the radio's beacon-interval naps.
@@ -42,17 +42,18 @@ char ssid[33];
 char password[65];
 
 // Reads a line from USB stdio with simple editing. Echoes '*' for each character when hidden.
-void readLine(const char *prompt, char *buf, size_t size, bool hidden) {
+void readLine(const char *prompt, char *buf, size_t size, bool hidden, bool allowEmpty = false) {
     printf("%s", prompt);
     fflush(stdout);
     size_t len = 0;
+    int c;
     while (true) {
-        int c = getchar_timeout_us(100 * 1000);
+        c = getchar_timeout_us(100 * 1000);
         if (c == PICO_ERROR_TIMEOUT) {
             continue;
         }
         if (c == '\r' || c == '\n') {
-            if (len == 0 && !hidden) {
+            if (len == 0 && !hidden && !allowEmpty) {
                 continue;  // swallow the \n of a \r\n pair, and stray blank lines
             }
             break;
@@ -67,6 +68,9 @@ void readLine(const char *prompt, char *buf, size_t size, bool hidden) {
             putchar(hidden ? '*' : c);
         }
         fflush(stdout);
+    }
+    if (c == '\r') {
+        getchar_timeout_us(20 * 1000);  // and the \n of a \r\n, so it isn't read as a second Enter
     }
     buf[len] = '\0';
     printf("\n");
@@ -393,37 +397,96 @@ void printSecond(uint32_t seconds, const Second &sec) {
     printf("\n");
 }
 
-void printMarker(int marker) {
-    int32_t lo = 0, hi = 0;
+// A prop's reading: the last kWindowSeconds seconds before Enter was pressed there.
+struct Mark {
+    char name[33];
+    int seconds;
+    int rssiCount;
+    int32_t rssiMin;
+    int32_t rssiMax;
+    double rssiAvg;
+    int ok;
+    int lost;
+    uint32_t rttMin;
+    uint32_t rttMax;
+    uint64_t rttSum;
+};
+
+constexpr int kMaxMarks = 32;
+Mark marks[kMaxMarks];
+int markCount = 0;
+
+Mark summarizeWindow() {
+    Mark m = {};
+    m.seconds = windowCount;
+    m.rttMin = UINT32_MAX;
     int64_t sum = 0;
-    int n = 0, ok = 0, lost = 0;
-    uint32_t rttMin = UINT32_MAX, rttMax = 0;
-    uint64_t rttSum = 0;
     for (int i = 0; i < windowCount; i++) {
         const Second &s = window[i];
         if (s.rssiValid) {
-            if (n == 0 || s.rssi < lo) lo = s.rssi;
-            if (n == 0 || s.rssi > hi) hi = s.rssi;
+            if (m.rssiCount == 0 || s.rssi < m.rssiMin) m.rssiMin = s.rssi;
+            if (m.rssiCount == 0 || s.rssi > m.rssiMax) m.rssiMax = s.rssi;
             sum += s.rssi;
-            n++;
+            m.rssiCount++;
         }
-        ok += s.ok;
-        lost += s.lost;
-        rttSum += s.rttSum;
-        if (s.ok > 0 && s.rttMin < rttMin) rttMin = s.rttMin;
-        if (s.ok > 0 && s.rttMax > rttMax) rttMax = s.rttMax;
+        m.ok += s.ok;
+        m.lost += s.lost;
+        m.rttSum += s.rttSum;
+        if (s.ok > 0 && s.rttMin < m.rttMin) m.rttMin = s.rttMin;
+        if (s.ok > 0 && s.rttMax > m.rttMax) m.rttMax = s.rttMax;
     }
-    printf("\n=== MARK %d: last %d s ", marker, windowCount);
-    if (n > 0) {
-        double avg = (double)sum / n;
-        printf("RSSI min %ld avg %.1f max %ld (%s)", (long)lo, avg, (long)hi,
-               quality((int32_t)(avg - 0.5)));
+    if (m.rssiCount > 0) {
+        m.rssiAvg = (double)sum / m.rssiCount;
+    }
+    return m;
+}
+
+// One line per mark, in the same layout for the single marker and the end-of-walk table, so the
+// lines are easy to pick out of a saved log.
+void printMarkLine(int number, const Mark &m) {
+    printf("MARK %2d  %-20s  ", number, m.name);
+    if (m.rssiCount > 0) {
+        printf("RSSI min %4ld avg %6.1f max %4ld  %-9s", (long)m.rssiMin, m.rssiAvg, (long)m.rssiMax,
+               quality((int32_t)(m.rssiAvg - 0.5)));
     } else {
-        printf("RSSI none");
+        printf("RSSI none%40s", "");
     }
-    printf(", ping ");
-    printPingStats(ok, lost, rttMin, rttMax, rttSum);
-    printf(" ms ===\n");
+    printf("  ping ");
+    printPingStats(m.ok, m.lost, m.rttMin, m.rttMax, m.rttSum);
+    printf(" ms\n");
+}
+
+// Called when Enter is pressed: freezes the last 10 seconds, then asks which prop this is.
+void dropMarker() {
+    Mark m = summarizeWindow();
+
+    // Swallow the \n of a \r\n Enter so it doesn't end the name prompt straight away.
+    getchar_timeout_us(20 * 1000);
+    char prompt[48];
+    snprintf(prompt, sizeof(prompt), "\nMark %d, prop name: ", markCount + 1);
+    readLine(prompt, m.name, sizeof(m.name), false, true);
+    if (m.name[0] == '\0') {
+        snprintf(m.name, sizeof(m.name), "(unnamed)");
+    }
+
+    int number;
+    if (markCount < kMaxMarks) {
+        marks[markCount] = m;
+        number = ++markCount;
+    } else {
+        number = kMaxMarks + 1;
+        printf("(mark table is full; this one is only in the log)\n");
+    }
+    printMarkLine(number, m);
+}
+
+// Called when 's' is pressed: every mark so far, to copy back inside.
+void printMarkTable() {
+    printf("\n=== %d mark(s) ===\n", markCount);
+    for (int i = 0; i < markCount; i++) {
+        printMarkLine(i + 1, marks[i]);
+    }
+    printf("===\n");
 }
 
 }  // namespace
@@ -453,11 +516,11 @@ int main() {
     }
     pingInit();
 
-    printf("\nPress Enter to drop a marker at a prop. Quality: excellent >= -60, good >= -70,\n"
-           "marginal >= -80 dBm, POOR below that.\n");
+    printf("\nAt a prop, press Enter and type its name to mark the last 10 s there; press s to list\n"
+           "every mark so far. Quality: excellent >= -60, good >= -70, marginal >= -80 dBm, POOR\n"
+           "below that.\n");
 
     int lines = 0;
-    int marker = 0;
     uint32_t start = to_ms_since_boot(get_absolute_time());
     uint32_t nextReport = start + kReportIntervalMs;
     uint32_t nextPing = start;
@@ -466,9 +529,18 @@ int main() {
         uint32_t now = to_ms_since_boot(get_absolute_time());
 
         int c = getchar_timeout_us(0);
-        if (c == '\r' || c == '\n') {
-            printMarker(++marker);
+        if (c == '\r' || c == '\n' || c == 's' || c == 'S') {
+            if (c == 's' || c == 'S') {
+                printMarkTable();
+            } else {
+                dropMarker();
+            }
+            // Typing pauses the loop; restart the clocks rather than firing a burst of catch-up
+            // pings and reports.
             lines = 0;
+            now = to_ms_since_boot(get_absolute_time());
+            nextReport = now + kReportIntervalMs;
+            nextPing = now;
         }
 
         if (!linkUp()) {

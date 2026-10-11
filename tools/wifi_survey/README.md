@@ -15,8 +15,14 @@ Once a second it prints:
 At startup it scans and lists every network it can hear, marks the show network with `>`, and says
 how many other networks share overlapping channels.
 
-**Press Enter** at a prop to print a numbered marker with a summary of the last 10 seconds. That
-makes a saved log of the walk easy to read back.
+**At each prop, press Enter and type the prop's name** (e.g. `arch 3`), then Enter again. That
+records the last 10 seconds before the first Enter (RSSI min/avg/max and ping stats) under that
+name and prints it as a `MARK` line. Readings pause while you type. **Press `s`** at the end of the
+walk to print every mark as a table; paste that (or the saved log) back to Claude.
+
+```
+MARK  3  arch 3                RSSI min  -71 avg  -68.4 max  -66  good       ping  40/40    2.1   3.4   9.8 ms
+```
 
 WiFi power saving is off (`CYW43_NONE_PM`), as PicoComm will run it, so ping times reflect the
 network and not the radio napping between beacons. If the link drops, it says so and reconnects.
