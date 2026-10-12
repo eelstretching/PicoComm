@@ -16,6 +16,7 @@
 
 #include "pico/stdlib.h"
 
+#include "credentials.h"
 #include "picocomm/pico/node.h"
 
 using picocomm::Cue;
@@ -34,55 +35,6 @@ constexpr uint64_t kSceneIntervalUs = 5000000;
 constexpr uint64_t kReportIntervalUs = 10000000;
 constexpr uint16_t kFwVersion = 1;
 
-char ssid[33];
-char password[65];
-
-// Reads a line from USB stdio with simple editing. Echoes '*' for each character when hidden.
-void readLine(const char *prompt, char *buf, size_t size, bool hidden) {
-    printf("%s", prompt);
-    fflush(stdout);
-    size_t len = 0;
-    while (true) {
-        int c = getchar_timeout_us(100 * 1000);
-        if (c == PICO_ERROR_TIMEOUT) {
-            continue;
-        }
-        if (c == '\r' || c == '\n') {
-            if (len == 0 && !hidden) {
-                continue;
-            }
-            break;
-        }
-        if (c == 0x7f || c == '\b') {
-            if (len > 0) {
-                len--;
-                printf("\b \b");
-            }
-        } else if (c >= 0x20 && c < 0x7f && len + 1 < size) {
-            buf[len++] = (char)c;
-            putchar(hidden ? '*' : c);
-        }
-        fflush(stdout);
-    }
-    buf[len] = '\0';
-    printf("\n");
-}
-
-void getCredentials() {
-    if (strlen(WIFI_SSID) > 0) {
-        snprintf(ssid, sizeof(ssid), "%s", WIFI_SSID);
-        snprintf(password, sizeof(password), "%s", WIFI_PASSWORD);
-        sleep_ms(2000);  // give a serial terminal a moment to attach, but don't wait for one
-        printf("Using compiled-in network \"%s\"\n", ssid);
-        return;
-    }
-    while (!stdio_usb_connected()) {
-        sleep_ms(100);
-    }
-    readLine("Show network SSID: ", ssid, sizeof(ssid), false);
-    readLine("Password (blank for an open network): ", password, sizeof(password), true);
-}
-
 // Cues waiting for their show time.
 constexpr int kMaxWaiting = 8;
 Cue waiting[kMaxWaiting];
@@ -98,7 +50,7 @@ int main() {
         gpio_put(pin, false);
     }
 
-    getCredentials();
+    bench::getCredentials();
     const bool isLeader = PICOCOMM_BENCH_LEADER;
     printf("\nPicoComm sync bench: %s\n", isLeader ? "LEADER" : "follower");
 
@@ -108,8 +60,8 @@ int main() {
     cfg.role = isLeader ? Role::Leader : Role::Follower;
     cfg.propType = picocomm::PropType::Bench;
     cfg.fwVersion = kFwVersion;
-    cfg.ssid = ssid;
-    cfg.password = password;
+    cfg.ssid = bench::ssid;
+    cfg.password = bench::password;
     cfg.effects = effects;
     cfg.effectCount = sizeof(effects) / sizeof(effects[0]);
     static Node node(cfg);

@@ -31,6 +31,7 @@
 
 #include "pico/util/queue.h"
 
+#include "picocomm/cue_source.h"
 #include "picocomm/effects.h"
 #include "picocomm/seqlock.h"
 #include "picocomm/sync.h"
@@ -70,7 +71,7 @@ struct NodeConfig {
     bool logEvents = true;
 };
 
-class Node {
+class Node : public CueSource {
    public:
     static constexpr int kCueQueueDepth = 8;
     static constexpr int kOutboundDepth = 8;
@@ -88,16 +89,16 @@ class Node {
 
     // Current show time. False until the clock is locked to the leader's (always true on the
     // leader once started). Never blocks.
-    bool showTime(uint64_t &showUs) const;
+    bool showTime(uint64_t &showUs) const override;
     // Show time at a given local time_us_64(), for converting timestamps.
     bool toShowTime(uint64_t localUs, uint64_t &showUs) const;
 
     // Next cue, if any. Cues come out in arrival order; act on each at cue.atUs (show time), or
     // at once if that has passed.
-    bool popCue(Cue &cue);
+    bool popCue(Cue &cue) override;
 
     // What core 0 is doing, sent to the leader in STATUS (and shown by `picocomm watch`).
-    void reportFrame(uint8_t fps, uint16_t missedFrames, uint16_t effect, uint16_t cueId);
+    void reportFrame(uint8_t fps, uint16_t missedFrames, uint16_t effect, uint16_t cueId) override;
 
     // Leader only: cue every prop in groupMask (including this one) leadMs from now. Queued to
     // core 1; returns false if that queue is full.

@@ -1,0 +1,4 @@
+[submodule "PicoLEDs"]
+	path = PicoLEDs
+	url = https://github.com/eelstretching/PicoLEDs.git
+	branch = main

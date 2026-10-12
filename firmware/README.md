@@ -48,3 +48,15 @@ and every 10 rounds a summary: mean and worst spread, and how many rounds fell u
 The image is built for the Pico 2 W; it runs on a plain Pico 2 as well. For an original RP2040
 Pico, configure a separate build directory with `-DPICO_BOARD=pico`; for a board without a radio
 only the judge is built.
+
+## led_bench_leader.uf2 and led_bench_follower.uf2
+
+Stage 2: the same idea with LEDs, drawn by a `picocomm::Conductor`. Wire 100 pixels (WS2811) to
+**GP2** on each board, with the usual level shifter and a shared ground; set up the network the
+same way as the sync bench.
+
+Before a follower finds the leader it plays its local playlist (Starlight). Once it's in, the
+leader runs the show for everyone: Starlight for 20 s, warm white for 5 s, then four 100 ms
+flashes a second apart (red, green, blue, white), and round again. Put the strips side by side, or
+film them in slow motion: the flashes should land on the same frame (25 ms at 40 fps) everywhere.
+Each board prints the cues it plays and a status line every 10 s, including missed frames.

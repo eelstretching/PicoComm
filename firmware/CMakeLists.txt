@@ -4,6 +4,8 @@ cmake_minimum_required(VERSION 3.13)
 #
 #   sync_bench_leader.uf2    leader: beacons, answers sync, cycles a test scene every 5 s
 #   sync_bench_follower.uf2  follower: joins, syncs, plays the test scenes
+#   led_bench_leader.uf2     the same scenes drawn on 100 pixels on GP2, by a Conductor
+#   led_bench_follower.uf2
 #   judge.uf2                a plain Pico (no WiFi needed) that timestamps the others' pulses
 #
 # Leader and followers pulse GP22 for 1 ms at every whole second of show time, and GP21 for 1 ms
@@ -56,7 +58,30 @@ foreach(role leader follower)
         WIFI_PASSWORD="${WIFI_PASSWORD}"
     )
     target_compile_options(${target} PRIVATE -Wall)
+    target_include_directories(${target} PRIVATE common)
     target_link_libraries(${target} PRIVATE picocomm_pico)
+    pico_enable_stdio_usb(${target} 1)
+    pico_enable_stdio_uart(${target} 0)
+    pico_add_extra_outputs(${target})
+endforeach()
+
+# The LED bench: the same, drawn on a strip by a Conductor. Needs the PicoLEDs submodule.
+add_subdirectory(../PicoLEDs/src picoleds)
+add_subdirectory(../conductor picocomm-conductor)
+foreach(role leader follower)
+    set(target led_bench_${role})
+    add_executable(${target} led_bench/main.cpp)
+    if(role STREQUAL "leader")
+        target_compile_definitions(${target} PRIVATE PICOCOMM_BENCH_LEADER=1)
+    else()
+        target_compile_definitions(${target} PRIVATE PICOCOMM_BENCH_LEADER=0)
+    endif()
+    target_compile_definitions(${target} PRIVATE
+        WIFI_SSID="${WIFI_SSID}"
+        WIFI_PASSWORD="${WIFI_PASSWORD}"
+    )
+    target_include_directories(${target} PRIVATE common)
+    target_link_libraries(${target} PRIVATE picocomm_conductor)
     pico_enable_stdio_usb(${target} 1)
     pico_enable_stdio_uart(${target} 0)
     pico_add_extra_outputs(${target})
