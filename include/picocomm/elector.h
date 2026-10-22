@@ -33,6 +33,20 @@
 
 namespace picocomm {
 
+// Mixed shows, where some boards have an RTC and some don't: the leader's BEACONs carry the
+// wall-clock time, so a board with no RTC that takes over can carry it on. But a board with an RTC
+// should still lead when one is up, so its rank goes above every board without one. This packs
+// that into the priority: the top bit for "has an RTC", the rest for the LED count (or whatever
+// number the show uses). Never 0 (never lead) or kAlwaysLead.
+constexpr uint32_t kHasRtcPriority = 0x80000000;
+constexpr uint32_t candidatePriority(uint32_t ledCount, bool hasRtc) {
+    uint32_t p = ledCount == 0 ? 1 : (ledCount >= kHasRtcPriority ? kHasRtcPriority - 1 : ledCount);
+    if (hasRtc) {
+        p |= kHasRtcPriority;
+    }
+    return p == kAlwaysLead ? kAlwaysLead - 1 : p;
+}
+
 struct ElectorConfig {
     // kNeverLead (0) only ever follows; kAlwaysLead leads from boot and never steps down.
     uint32_t priority = kNeverLead;
@@ -55,6 +69,11 @@ class ElectorApp : public FollowerApp, public LeaderApp {
    public:
     // This node started (true) or stopped (false) leading. A leader runs the show script.
     virtual void leadingChanged(bool /*leading*/) {}
+    // The leader we follow says show time showUs is unix time unixUs, in microseconds (good to a
+    // few ms: the BEACON is a broadcast, and carries the fraction of a second in 1/256 s). unixUs 0
+    // means forget it: show time started over, so a mapping heard earlier no longer applies. A node
+    // with no RTC keeps the last one it heard when it takes over, and its own BEACONs carry it on.
+    virtual void wallClockHeard(uint64_t /*unixUs*/, uint64_t /*showUs*/) {}
 };
 
 class Elector {

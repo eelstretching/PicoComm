@@ -90,6 +90,7 @@ class Beacon:
     scene_id: int = 0
     follower_count: int = 0
     priority: int = 0
+    unix_fraction: int = 0  # how far into unix_time's second, in 1/256 s
 
 
 @dataclass
@@ -192,7 +193,7 @@ class Override:
 
 # Payload layouts, bytes 8 to 31, in dataclass field order. Each is exactly 24 bytes.
 _PAYLOADS: dict[int, tuple[type, struct.Struct]] = {
-    PacketType.BEACON: (Beacon, struct.Struct("<IQIHBIx")),
+    PacketType.BEACON: (Beacon, struct.Struct("<IQIHBIB")),
     PacketType.JOIN: (Join, struct.Struct("<8sBBHHH8x")),
     PacketType.WELCOME: (Welcome, struct.Struct("<IBxH8s8x")),
     PacketType.SYNC_REQ: (SyncReq, struct.Struct("<Q16x")),

@@ -37,6 +37,9 @@ class LeaderApp {
     virtual void deliverCue(const Cue &cue) = 0;
     // Wall-clock time at the given show time, as unix seconds, or 0 if not known (no RTC).
     virtual uint32_t unixTime(uint64_t /*showUs*/) { return 0; }
+    // The same in microseconds, for the BEACON's unixFraction. Override this one if the app knows
+    // the wall clock to better than a second.
+    virtual uint64_t unixTimeUs(uint64_t showUs) { return (uint64_t)unixTime(showUs) * 1000000; }
     // The leader's own row in the roster: fps, missedFrames, rssi, effect, cueId.
     virtual void fillStatus(Status &/*status*/) {}
 };

@@ -163,8 +163,9 @@ class FakeLeader:
             self.next_beacon = now + self.BEACON_US
             active = sum(1 for m in self.members.values() if m.state != wire.NodeState.LOST)
             for addr in self.beacon_addrs:
-                self._send(wire.Beacon(self.generation, now, int(time.time()), self.scene_id,
-                                       active, wire.ALWAYS_LEAD), addr)
+                wall = time.time()
+                self._send(wire.Beacon(self.generation, now, int(wall), self.scene_id, active,
+                                       wire.ALWAYS_LEAD, int(wall % 1 * 256)), addr)
         if self.scene_every_us and now >= self.next_scene:
             self.next_scene = now + self.scene_every_us
             effects = ["starlight", "twinklefox", "leap", "chase"]

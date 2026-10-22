@@ -65,6 +65,10 @@ struct NodeConfig {
     // Candidates only: the higher number leads (by convention the prop's LED count). 0 is taken as
     // 1, since 0 means "never lead".
     uint32_t leaderPriority = 0;
+    // Whether this board has an RTC (a DS3231) to call setWallClock() from. A candidate with one
+    // outranks every candidate without one, whatever their leaderPriority (candidatePriority() in
+    // picocomm/elector.h), so in a show where only some boards have RTCs, one of those leads.
+    bool hasRtc = false;
     PropType propType = PropType::Unknown;
     uint8_t propIndex = 0;
     uint16_t fwVersion = 0;
@@ -116,6 +120,11 @@ class Node : public CueSource {
     bool cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs = 300);
     // Tell the node the wall-clock time (from the DS3231) so its BEACONs carry it while it leads.
     void setWallClock(uint32_t unixSeconds, uint64_t atShowUs);
+    // Unix time (whole seconds) at a show time, or 0 if unknown. Following, the leader's (from its
+    // BEACONs) wins over this board's own RTC, so every prop agrees; leading, this board's RTC if
+    // it has one, or else the one it heard from the leader before it, carried on.
+    uint32_t unixTime(uint64_t showUs) const { return (uint32_t)(unixTimeUs(showUs) / 1000000); }
+    uint64_t unixTimeUs(uint64_t showUs) const;
 
     NetState state() const { return state_.load(std::memory_order_relaxed); }
     int8_t rssi() const { return rssi_.load(std::memory_order_relaxed); }
@@ -135,7 +144,7 @@ class Node : public CueSource {
     void pushCue(const Cue &c);
     void fillStatus(Status &s) const;
     bool knowsEffect(uint16_t effect) const;
-    uint32_t unixTime(uint64_t showUs) const;
+    void heardWallClock(uint64_t unixUs, uint64_t showUs) { heardClock_.write({unixUs, showUs}); }
     const NodeConfig &config() const { return config_; }
 
    private:
@@ -151,10 +160,11 @@ class Node : public CueSource {
     std::atomic<uint32_t> frameStats_{0};  // fps | missedFrames << 8
     std::atomic<uint32_t> playing_{0};     // effect | cueId << 16
     struct WallClock {
-        uint32_t unixSeconds;
+        uint64_t unixUs;  // 0: unknown
         uint64_t showUs;
     };
-    SeqLock<WallClock> wallClock_;
+    SeqLock<WallClock> wallClock_;   // from this board's RTC (core 0)
+    SeqLock<WallClock> heardClock_;  // from the leader's BEACONs (core 1)
 };
 
 }  // namespace pico

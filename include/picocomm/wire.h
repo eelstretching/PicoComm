@@ -90,6 +90,10 @@ struct Beacon {
     // address. A fixed leader sends kAlwaysLead, which outranks every candidate; 0 is what a
     // leader from before elections sends, and any candidate outranks it.
     uint32_t priority = 0;
+    // How far into unixTime's second the leader was at showTimeUs, in 1/256 s. Without it a prop
+    // that learns the wall clock from beacons could be up to a second behind, and a candidate that
+    // takes over and carries the wall clock on would pass that lag along at every handover.
+    uint8_t unixFraction = 0;
 };
 
 constexpr uint32_t kNeverLead = 0;

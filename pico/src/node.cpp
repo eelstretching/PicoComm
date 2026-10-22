@@ -77,9 +77,15 @@ class ElectorGlue : public ElectorApp {
     bool knowsEffect(uint16_t effect) override { return node.knowsEffect(effect); }
     void deliverCue(const Cue &cue) override { node.pushCue(cue); }
     void clockChanged(const ClockModel &m) override { node.publishClock(m); }
-    void clockLost() override { node.unpublishClock(); }
+    void clockLost() override {
+        node.unpublishClock();
+        node.heardWallClock(0, 0);
+    }
+    void wallClockHeard(uint64_t unixUs, uint64_t showUs) override {
+        node.heardWallClock(unixUs, showUs);
+    }
     void fillStatus(Status &s) override { node.fillStatus(s); }
-    uint32_t unixTime(uint64_t showUs) override { return node.unixTime(showUs); }
+    uint64_t unixTimeUs(uint64_t showUs) override { return node.unixTimeUs(showUs); }
     Node &node;
 };
 
@@ -188,15 +194,23 @@ bool Node::cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs) {
 }
 
 void Node::setWallClock(uint32_t unixSeconds, uint64_t atShowUs) {
-    wallClock_.write({unixSeconds, atShowUs});
+    wallClock_.write({(uint64_t)unixSeconds * 1000000, atShowUs});
 }
 
-uint32_t Node::unixTime(uint64_t showUs) const {
-    WallClock w;
-    if (!wallClock_.read(w) || w.unixSeconds == 0) {
+uint64_t Node::unixTimeUs(uint64_t showUs) const {
+    WallClock own, heard;
+    bool haveOwn = wallClock_.read(own) && own.unixUs != 0;
+    bool haveHeard = heardClock_.read(heard) && heard.unixUs != 0;
+    const WallClock *w = nullptr;
+    if (leading()) {
+        w = haveOwn ? &own : (haveHeard ? &heard : nullptr);
+    } else {
+        w = haveHeard ? &heard : (haveOwn ? &own : nullptr);
+    }
+    if (w == nullptr) {
         return 0;
     }
-    return w.unixSeconds + (uint32_t)((int64_t)(showUs - w.showUs) / 1000000);
+    return w->unixUs + (showUs - w->showUs);
 }
 
 void Node::pushCue(const Cue &c) {
@@ -261,7 +275,7 @@ void Node::core1Main() {
         case Role::Leader: ec.priority = kAlwaysLead; break;
         case Role::Follower: ec.priority = kNeverLead; break;
         case Role::Candidate:
-            ec.priority = config_.leaderPriority == kNeverLead ? 1 : config_.leaderPriority;
+            ec.priority = candidatePriority(config_.leaderPriority, config_.hasRtc);
             break;
     }
     pico_unique_board_id_t id;

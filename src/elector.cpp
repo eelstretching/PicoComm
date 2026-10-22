@@ -69,6 +69,9 @@ void Elector::lead(uint64_t now, const char *why) {
     if (config_.priority != kAlwaysLead) {
         takeovers_++;
     }
+    if (offset == 0) {
+        app_.wallClockHeard(0, 0);  // our own new show time: nothing heard before applies
+    }
     log("leading (%s), generation %08lx, priority %lu%s", why, (unsigned long)generation,
         (unsigned long)config_.priority, offset != 0 ? ", carrying on show time" : "");
 
@@ -124,6 +127,12 @@ void Elector::onPacket(const uint8_t *data, size_t len, uint32_t srcIp, uint16_t
         heardBeacon(b, srcIp, rxUs);
         if (srcIp == leaderIp_) {
             follower_->onPacket(data, len, srcIp, srcPort, rxUs);
+            if (b.unixTime != 0) {
+                // The middle of the 1/256 s step the fraction was rounded down into.
+                uint64_t unixUs = (uint64_t)b.unixTime * 1000000 +
+                                  ((uint64_t)b.unixFraction * 2 + 1) * 1000000 / 512;
+                app_.wallClockHeard(unixUs, b.showTimeUs);
+            }
         }
         return;
     }

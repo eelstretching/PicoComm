@@ -191,6 +191,24 @@ the show network, and already in every packet's source, so it costs no bytes).
   leads. A show with one fixed leader and the rest plain followers works exactly as before the
   election existed.
 
+### Mixed shows: some boards with an RTC, some without
+
+Until every board has its DS3231, some props have a wall clock and some don't. Show time doesn't
+care (it's the leader's clock, RTC or not); only the wall clock does, for "start at 5 pm".
+
+- **An RTC board leads when one is up.** `candidatePriority(ledCount, hasRtc)` sets the top bit of
+  the priority for a board with an RTC, so it outranks every board without one, whatever their LED
+  counts; within each group the LED count decides as before. A board without an RTC can still be a
+  candidate, so the show goes on if the RTC boards are down.
+- **Everyone learns the wall clock from the beacons.** Each BEACON carries unix time and the
+  fraction of its second (byte 31, in 1/256 s), against the beacon's show time. A follower keeps the
+  latest; following, it prefers the leader's wall clock over its own RTC, so every prop agrees.
+  It's good to a few ms (the beacon's trip plus the clock error). It's forgotten when show time
+  starts over, and when a node starts leading with a fresh show time.
+- **A board without an RTC that takes over carries the wall clock on**, from the last beacon it
+  heard, the same way it carries on show time. Without the fraction each such handover could lose
+  up to a second; with it, a chain of handovers stays within a few ms.
+
 All of this lives in `Elector` (`include/picocomm/elector.h`), which owns a `Leader` or a
 `Follower` and switches between them, so the Pico glue and the simulator both get it for free.
 
@@ -258,7 +276,7 @@ there; followers and the laptop use any local port). One size means one receive 
 
 | Type | Name | Direction | Payload (offset: type field) |
 |---|---|---|---|
-| 1 | BEACON | leader to broadcast | 8: u32 generation; 12: u64 showTimeUs; 20: u32 unixTime (0 if unknown); 24: u16 sceneId; 26: u8 followerCount; 27: u32 priority (0 never leads, 0xffffffff fixed leader); 31: reserved |
+| 1 | BEACON | leader to broadcast | 8: u32 generation; 12: u64 showTimeUs; 20: u32 unixTime (0 if unknown); 24: u16 sceneId; 26: u8 followerCount; 27: u32 priority (0 never leads, 0xffffffff fixed leader); 31: u8 unixFraction (how far into unixTime's second, in 1/256 s) |
 | 2 | JOIN | follower to leader | 8: u8[8] boardId; 16: u8 propType; 17: u8 propIndex; 18: u16 fwVersion; 20: u16 catalogVersion; 22: u16 capabilities; 24 to 31: reserved |
 | 3 | WELCOME | leader to follower | 8: u32 generation; 12: u8 nodeId; 13: reserved; 14: u16 groupMask; 16: u8[8] boardId (echo); 24 to 31: reserved |
 | 4 | SYNC_REQ | follower or observer to leader | 8: u64 t1; 16 to 31: reserved |

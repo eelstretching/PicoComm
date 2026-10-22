@@ -641,8 +641,37 @@ class SimNode : public Endpoint, public ElectorApp {
     void clockLost() override {
         published = false;
         clockLosses++;
+        heard = {};
     }
-    void leadingChanged(bool) override { roleChanges++; }
+    void leadingChanged(bool leading) override {
+        roleChanges++;
+        uint64_t show;
+        if (leading && hasRtc && showTime(show)) {
+            // The DS3231 (whose seconds tick can be caught exactly): the true time now.
+            own = {trueUnixUs(sim_), show};
+        }
+    }
+    void wallClockHeard(uint64_t unixUs, uint64_t show) override { heard = {unixUs, show}; }
+    // Like Node::unixTimeUs: following, the leader's wall clock wins; leading, our own RTC, or
+    // the one heard from the leader before us.
+    uint64_t unixTimeUs(uint64_t show) override {
+        const WallClock *w = leading() ? (own.us ? &own : (heard.us ? &heard : nullptr))
+                                       : (heard.us ? &heard : (own.us ? &own : nullptr));
+        return w == nullptr ? 0 : w->us + (show - w->show);
+    }
+    // Unix time now by this node's own reckoning, in microseconds, or 0.
+    uint64_t unixNowUs() {
+        uint64_t show;
+        return showTime(show) ? unixTimeUs(show) : 0;
+    }
+    static uint64_t trueUnixUs(const Sim &sim) { return 1797000000ull * 1000000 + (uint64_t)sim.now; }
+
+    struct WallClock {
+        uint64_t us = 0;
+        uint64_t show = 0;
+    };
+    bool hasRtc = false;
+    WallClock own, heard;
 
     std::unique_ptr<Elector> elector;
     std::vector<Delivered> delivered;
@@ -849,6 +878,73 @@ void testElectionLossy() {
     CHECK_EQ(leaderless, 0);
 }
 
+void testMixedRtc() {
+    printf("  mixed RTC and no-RTC boards: an RTC board leads, the wall clock carries on\n");
+    Sim sim(10);
+    // The MegaTree's board has no RTC yet; one arch does. The arch leads despite fewer pixels.
+    SimNode tree(sim, 1, 0, 0, candidatePriority(6400, false), PropType::MegaTree, 1);
+    SimNode arch(sim, 2, 15, 4 * kSec, candidatePriority(200, true), PropType::Arch, 1);
+    SimNode mini(sim, 3, -12, 7 * kSec, kNeverLead, PropType::MiniTree, 1);
+    arch.hasRtc = true;
+    arch.powerCycle();  // so it starts with the RTC fitted
+    std::vector<SimNode *> all{&tree, &arch, &mini};
+    int64_t worstWallUs = 0;
+    auto wallClocksAgree = [&](const std::vector<SimNode *> &nodes) {
+        // Good to 1/256 s, plus how far show time is off, plus the beacon's trip.
+        bool ok = true;
+        for (SimNode *s : nodes) {
+            int64_t err = (int64_t)(s->unixNowUs() - SimNode::trueUnixUs(sim));
+            worstWallUs = std::max(worstWallUs, err < 0 ? -err : err);
+            if (err < -6000 || err > 6000) {
+                printf("    node %u: wall clock off by %lld us\n", s->ip >> 24, (long long)err);
+                ok = false;
+            }
+        }
+        return ok;
+    };
+    CHECK(candidatePriority(200, true) > candidatePriority(6400, false));
+    CHECK(candidatePriority(0, false) == 1);
+    CHECK(candidatePriority(0xffffffff, true) == kAlwaysLead - 1);
+
+    sim.run(20 * kSec);
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(arch.leading());
+    CHECK(wallClocksAgree(all));  // the boards without an RTC learned it from the beacons
+
+    // The arch dies. The tree takes over with no RTC of its own, and carries on both clocks.
+    arch.up = false;
+    sim.run(15 * kSec);
+    std::vector<SimNode *> rest{&tree, &mini};
+    CHECK(tree.leading());
+    CHECK_EQ(tree.own.us, 0u);
+    CHECK(wallClocksAgree(rest));
+    CHECK_EQ(mini.clockLosses, 0);
+    sim.run(60 * kSec);
+    CHECK(wallClocksAgree(rest));
+
+    // The arch comes back and takes the show back, since it has the RTC.
+    arch.up = true;
+    arch.powerCycle();
+    sim.run(15 * kSec);
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(arch.leading());
+    CHECK(wallClocksAgree(all));
+    for (SimNode *s : all) {
+        CHECK_EQ(s->backwards, 0);
+    }
+
+    printf("    worst wall-clock error: %lld us\n", (long long)worstWallUs);
+
+    // With no RTC anywhere, show time works as before and the wall clock is simply unknown.
+    Sim sim2(11);
+    SimNode a(sim2, 2, 10, 1 * kSec, candidatePriority(300, false));
+    SimNode f(sim2, 3, -10, 2 * kSec, kNeverLead);
+    sim2.run(20 * kSec);
+    CHECK(a.leading());
+    CHECK_EQ(f.unixNowUs(), 0u);
+    CHECK(f.elector->follower()->locked());
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -864,5 +960,6 @@ int main(int argc, char **argv) {
     testElection();
     testElectionSplitAndFixedLeader();
     testElectionLossy();
+    testMixedRtc();
     return check::finish("test_sim");
 }

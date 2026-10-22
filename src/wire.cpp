@@ -41,6 +41,7 @@ void encode(Header h, const Beacon &p, uint8_t *out) {
     put16(out + 24, p.sceneId);
     out[26] = p.followerCount;
     put32(out + 27, p.priority);
+    out[31] = p.unixFraction;
 }
 
 void decode(const uint8_t *in, Beacon &p) {
@@ -50,6 +51,7 @@ void decode(const uint8_t *in, Beacon &p) {
     p.sceneId = get16(in + 24);
     p.followerCount = in[26];
     p.priority = get32(in + 27);
+    p.unixFraction = in[31];
 }
 
 void encode(Header h, const Join &p, uint8_t *out) {

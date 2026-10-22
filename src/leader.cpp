@@ -407,7 +407,9 @@ void Leader::sendBeacon(uint64_t now) {
     Beacon b;
     b.generation = config_.generation;
     b.showTimeUs = now;
-    b.unixTime = app_.unixTime(now);
+    uint64_t unixUs = app_.unixTimeUs(now);
+    b.unixTime = (uint32_t)(unixUs / 1000000);
+    b.unixFraction = (uint8_t)(unixUs % 1000000 * 256 / 1000000);
     b.sceneId = sceneId_;
     int n = activeFollowers();
     b.followerCount = (uint8_t)(n > 255 ? 255 : n);
