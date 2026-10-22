@@ -89,7 +89,15 @@ void Leader::handleSyncReq(const Header &h, const uint8_t *data, uint32_t ip, ui
                            uint64_t rxUs) {
     SyncReq req;
     decode(data, req);
-    // Anyone may sync (followers and observers). Answer first, bookkeeping after.
+    // Observers may always sync, and followers we know. A node ID we never gave out at that
+    // address is a follower of a previous generation of ours (we rebooted, and it hasn't heard our
+    // new beacon yet): our new show time would only throw its clock fit off, so it gets no answer
+    // until it rejoins.
+    Member *m = findMember(h.src, ip);
+    if (m == nullptr && h.src != kObserverId && h.src != kUnassignedId) {
+        return;
+    }
+    // Answer first, bookkeeping after.
     SyncResp resp;
     resp.t1 = req.t1;
     resp.t2 = rxUs;
@@ -99,7 +107,7 @@ void Leader::handleSyncReq(const Header &h, const uint8_t *data, uint32_t ip, ui
     encode(rh, resp, pkt);
     transport_.send(ip, port, pkt);
 
-    if (Member *m = findMember(h.src, ip)) {
+    if (m != nullptr) {
         heard(*m, rxUs);
         if (m->state == NodeState::Joining) {
             m->state = NodeState::Synced;
