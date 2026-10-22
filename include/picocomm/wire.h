@@ -86,7 +86,14 @@ struct Beacon {
     uint32_t unixTime = 0;    // 0 if the leader doesn't know the wall-clock time
     uint16_t sceneId = 0;
     uint8_t followerCount = 0;
+    // Leader election rank (section 5): the higher priority leads, ties go to the higher IPv4
+    // address. A fixed leader sends kAlwaysLead, which outranks every candidate; 0 is what a
+    // leader from before elections sends, and any candidate outranks it.
+    uint32_t priority = 0;
 };
+
+constexpr uint32_t kNeverLead = 0;
+constexpr uint32_t kAlwaysLead = 0xffffffff;
 
 struct Join {
     uint8_t boardId[8] = {};

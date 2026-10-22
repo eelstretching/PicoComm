@@ -24,6 +24,10 @@ UNASSIGNED_ID = 254
 OBSERVER_ID = 255
 
 FLAG_ACK_REQUESTED = 0x01
+
+# BEACON priority (leader election): a fixed leader outranks every candidate.
+NEVER_LEAD = 0
+ALWAYS_LEAD = 0xFFFFFFFF
 QUERY_ROSTER = 1
 
 _HEADER = struct.Struct("<2sBBHBB")
@@ -85,6 +89,7 @@ class Beacon:
     unix_time: int = 0
     scene_id: int = 0
     follower_count: int = 0
+    priority: int = 0
 
 
 @dataclass
@@ -187,7 +192,7 @@ class Override:
 
 # Payload layouts, bytes 8 to 31, in dataclass field order. Each is exactly 24 bytes.
 _PAYLOADS: dict[int, tuple[type, struct.Struct]] = {
-    PacketType.BEACON: (Beacon, struct.Struct("<IQIHB5x")),
+    PacketType.BEACON: (Beacon, struct.Struct("<IQIHBIx")),
     PacketType.JOIN: (Join, struct.Struct("<8sBBHHH8x")),
     PacketType.WELCOME: (Welcome, struct.Struct("<IBxH8s8x")),
     PacketType.SYNC_REQ: (SyncReq, struct.Struct("<Q16x")),

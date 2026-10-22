@@ -5,7 +5,8 @@
 // Typical prop firmware:
 //
 //     picocomm::pico::NodeConfig cfg;
-//     cfg.role = picocomm::pico::Role::Follower;
+//     cfg.role = picocomm::pico::Role::Candidate;  // or Follower, or a fixed Leader
+//     cfg.leaderPriority = 6400;                   // e.g. the prop's LED count
 //     cfg.propType = picocomm::PropType::Arch;
 //     cfg.propIndex = 3;
 //     cfg.ssid = "show"; cfg.password = "...";
@@ -19,6 +20,7 @@
 //         if (node.showTime(show)) { ...frame pacing on show time... }
 //         picocomm::Cue cue;
 //         while (node.popCue(cue)) { ...act on it at cue.atUs... }
+//         if (node.leading()) { ...run the show script: node.cue(...)... }
 //     }
 //
 // Only one Node can exist (core 1 has one entry point).
@@ -40,7 +42,9 @@
 namespace picocomm {
 namespace pico {
 
-enum class Role : uint8_t { Leader, Follower };
+// Leader: always leads (BEACON priority kAlwaysLead). Follower: never leads. Candidate: enters the
+// leader election with leaderPriority (docs/protocol-design.md, section 5).
+enum class Role : uint8_t { Leader, Follower, Candidate };
 
 // What core 1 is doing, for a status light or the serial log.
 enum class NetState : uint8_t {
@@ -49,15 +53,18 @@ enum class NetState : uint8_t {
     Connecting,   // joining the WiFi network
     Searching,    // follower: waiting for a beacon
     Joining,      // follower: sent JOIN
-    Joined,       // follower: in the show
-    Orphaned,     // follower: lost the leader, playing the local playlist, still searching
-    Leading,      // leader: beaconing
+    Joined,       // following: in the show
+    Orphaned,     // following: lost the leader, playing the local playlist, still searching
+    Leading,      // leading: beaconing, running the show
 };
 
 const char *toString(NetState s);
 
 struct NodeConfig {
     Role role = Role::Follower;
+    // Candidates only: the higher number leads (by convention the prop's LED count). 0 is taken as
+    // 1, since 0 means "never lead".
+    uint32_t leaderPriority = 0;
     PropType propType = PropType::Unknown;
     uint8_t propIndex = 0;
     uint16_t fwVersion = 0;
@@ -100,10 +107,14 @@ class Node : public CueSource {
     // What core 0 is doing, sent to the leader in STATUS (and shown by `picocomm watch`).
     void reportFrame(uint8_t fps, uint16_t missedFrames, uint16_t effect, uint16_t cueId) override;
 
+    // Whether this node is leading right now (a Candidate can start or stop at any time).
+    bool leading() const { return state() == NetState::Leading; }
+
     // Leader only: cue every prop in groupMask (including this one) leadMs from now. Queued to
-    // core 1; returns false if that queue is full.
+    // core 1; returns false if that queue is full. Cues still queued when this node stops leading
+    // are dropped.
     bool cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs = 300);
-    // Leader only: tell the leader the wall-clock time (from the DS3231) so BEACONs carry it.
+    // Tell the node the wall-clock time (from the DS3231) so its BEACONs carry it while it leads.
     void setWallClock(uint32_t unixSeconds, uint64_t atShowUs);
 
     NetState state() const { return state_.load(std::memory_order_relaxed); }

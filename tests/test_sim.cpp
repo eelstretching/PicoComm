@@ -4,7 +4,7 @@
 //
 // It checks the things the basement tests will check for real: clocks agree to well under 1 ms,
 // cues arrive exactly once and in time despite loss, late joiners catch up, and followers survive
-// the leader disappearing or rebooting.
+// the leader disappearing or rebooting. The election tests at the end run every node as an Elector.
 
 #include <algorithm>
 #include <cstdlib>
@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "check.h"
+#include "picocomm/elector.h"
 #include "picocomm/follower.h"
 #include "picocomm/leader.h"
 
@@ -574,6 +575,280 @@ void testFollowerReboot() {
     CHECK_EQ(leader.leader->activeFollowers(), 1);
 }
 
+// ---- Leader election ----
+
+std::mt19937 electionRng(99);
+uint32_t electionRandom() { return (uint32_t)electionRng(); }
+
+// A prop running an Elector: leads or follows as the election goes.
+class SimNode : public Endpoint, public ElectorApp {
+   public:
+    SimNode(Sim &sim, int n, double driftPpm, int64_t localAtBoot, uint32_t priority,
+            PropType type = PropType::Arch, uint8_t index = 1)
+        : Endpoint(sim, n, driftPpm, localAtBoot), priority_(priority), type_(type), index_(index) {
+        start();
+    }
+    void start() {
+        ElectorConfig cfg;
+        cfg.priority = priority_;
+        for (int i = 0; i < 8; i++) {
+            cfg.boardId[i] = (uint8_t)((ip >> 24) * 16 + i);
+        }
+        cfg.propType = type_;
+        cfg.propIndex = index_;
+        cfg.ownIp = ip;
+        cfg.random32 = electionRandom;
+        cfg.log = logLine;
+        published = false;
+        elector.reset();
+        elector = std::make_unique<Elector>(cfg, *this, *this);
+    }
+    // Power cycle: the clock starts over at zero and so does the Elector.
+    void powerCycle() {
+        reboot(sim_.now);
+        start();
+    }
+    void receive(const uint8_t *pkt, uint32_t srcIp, uint16_t srcPort, uint64_t rxUs) override {
+        elector->onPacket(pkt, kPacketSize, srcIp, srcPort, rxUs);
+    }
+    void tick() override {
+        elector->poll();
+        uint64_t show;
+        if (showTime(show)) {
+            if (haveLast && show < lastShow) {
+                backwards++;
+            }
+            lastShow = show;
+            haveLast = true;
+        }
+    }
+    // What core 0 would read: the published clock, whichever role this node has.
+    bool showTime(uint64_t &show) {
+        if (!published) {
+            return false;
+        }
+        show = model.toShow(nowUs());
+        return true;
+    }
+    bool leading() const { return elector->leading(); }
+
+    bool knowsEffect(uint16_t) override { return true; }
+    void deliverCue(const Cue &c) override { delivered.push_back({c, sim_.now}); }
+    void clockChanged(const ClockModel &m) override {
+        model = m;
+        published = true;
+    }
+    void clockLost() override {
+        published = false;
+        clockLosses++;
+    }
+    void leadingChanged(bool) override { roleChanges++; }
+
+    std::unique_ptr<Elector> elector;
+    std::vector<Delivered> delivered;
+    ClockModel model;
+    bool published = false;
+    int backwards = 0;
+    int clockLosses = 0;
+    int roleChanges = 0;
+    uint64_t lastShow = 0;
+    bool haveLast = false;
+
+   private:
+    uint32_t priority_;
+    PropType type_;
+    uint8_t index_;
+};
+
+int leaderCount(const std::vector<SimNode *> &nodes) {
+    int n = 0;
+    for (SimNode *s : nodes) {
+        if (s->up && s->leading()) {
+            n++;
+        }
+    }
+    return n;
+}
+
+SimNode *theLeader(const std::vector<SimNode *> &nodes) {
+    for (SimNode *s : nodes) {
+        if (s->up && s->leading()) {
+            return s;
+        }
+    }
+    return nullptr;
+}
+
+// Worst show-time disagreement between the leader and every locked node, sampled every ms.
+int64_t worstSpread(Sim &sim, const std::vector<SimNode *> &nodes, int64_t durationUs) {
+    int64_t worst = 0;
+    sim.run(durationUs, [&]() {
+        SimNode *l = theLeader(nodes);
+        uint64_t ref;
+        if (l == nullptr || !l->showTime(ref)) {
+            return;
+        }
+        for (SimNode *s : nodes) {
+            uint64_t t;
+            if (s->up && s != l && s->showTime(t)) {
+                int64_t e = (int64_t)(t - ref);
+                if (e < 0) e = -e;
+                if (e > worst) worst = e;
+            }
+        }
+    });
+    return worst;
+}
+
+void testElection() {
+    printf("  election: highest priority leads, takeover carries on show time\n");
+    Sim sim(6);
+    // The MegaTree (6400 px) boots last; two arches (200 px each) and a mini tree that never leads.
+    SimNode arch1(sim, 2, 20, 5 * kSec, 200, PropType::Arch, 1);
+    SimNode arch2(sim, 3, -15, 9 * kSec, 200, PropType::Arch, 2);
+    SimNode mini(sim, 4, 8, 2 * kSec, kNeverLead, PropType::MiniTree, 1);
+    std::vector<SimNode *> all{&arch1, &arch2, &mini};
+    sim.run(8 * kSec);
+    // Equal priorities: the higher address (arch2) wins.
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(arch2.leading());
+    CHECK(!mini.leading());
+
+    SimNode tree(sim, 1, 0, 0, 6400, PropType::MegaTree, 1);
+    all.push_back(&tree);
+    sim.run(10 * kSec);
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(tree.leading());
+    CHECK_EQ(tree.elector->takeovers(), 1u);
+    CHECK_EQ(arch2.elector->stepDowns(), 1u);
+    for (SimNode *s : all) {
+        CHECK_EQ(s->elector->leaderIp(), s == &tree ? 0u : tree.ip);
+        if (!s->leading()) {
+            CHECK(s->elector->follower()->locked());
+        }
+    }
+    sim.run(30 * kSec);
+    int64_t worst = worstSpread(sim, all, 30 * kSec);
+    printf("    worst spread under the MegaTree: %lld us\n", (long long)worst);
+    CHECK(worst < 500);
+
+    // The MegaTree's controller dies mid-show. The arch with the higher address takes over and
+    // carries on the show time, so nothing jumps and nobody loses the clock.
+
+    uint16_t id = tree.elector->cue(groupBit(PropType::Arch), effectCue(EffectId::Leap));
+    CHECK(id != 0);
+    sim.run(2 * kSec);
+    tree.up = false;
+    sim.run(12 * kSec);
+    std::vector<SimNode *> rest{&arch1, &arch2, &mini};
+    CHECK_EQ(leaderCount(rest), 1);
+    CHECK(arch2.leading());
+    for (SimNode *s : rest) {
+        CHECK_EQ(s->clockLosses, 0);
+        CHECK_EQ(s->backwards, 0);
+        if (!s->leading()) {
+            // A second candidate may have claimed too (its jitter ran out before the first
+            // claim's beacon reached it) and stepped down; either way no one saw a reboot.
+            CHECK_EQ(s->elector->follower()->stats().leaderReboots, 0u);
+        }
+    }
+    sim.run(30 * kSec);
+    worst = worstSpread(sim, rest, 20 * kSec);
+    printf("    worst spread after the takeover: %lld us\n", (long long)worst);
+    CHECK(worst < 500);
+    // The new leader can cue the show.
+    size_t before = arch1.delivered.size();
+    CHECK(arch2.elector->cue(groupBit(PropType::Arch), effectCue(EffectId::Cylon)) != 0);
+    sim.run(1 * kSec);
+    CHECK_EQ(arch1.delivered.size(), before + 1);
+
+    // The MegaTree reboots: it joins, locks, and takes the show back without a jump.
+    tree.up = true;
+    tree.powerCycle();
+    sim.run(10 * kSec);
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(tree.leading());
+    for (SimNode *s : rest) {
+        CHECK_EQ(s->clockLosses, 0);
+        CHECK_EQ(s->backwards, 0);
+    }
+    sim.run(30 * kSec);
+    worst = worstSpread(sim, all, 20 * kSec);
+    printf("    worst spread after the MegaTree took the show back: %lld us\n", (long long)worst);
+    CHECK(worst < 500);
+}
+
+void testElectionSplitAndFixedLeader() {
+    printf("  election: two leaders after a network split; fixed leader never deposed\n");
+    Sim sim(7);
+    SimNode a(sim, 2, 10, 1 * kSec, 300);
+    SimNode b(sim, 3, -10, 2 * kSec, 500);
+    SimNode f(sim, 4, 5, 3 * kSec, kNeverLead, PropType::MiniTree, 1);
+    std::vector<SimNode *> all{&a, &b, &f};
+    sim.run(10 * kSec);
+    CHECK(b.leading());
+    // b drops off the network long enough for a to take over, then comes back: two leaders until
+    // a hears b's beacon and steps down.
+    b.up = false;
+    sim.run(12 * kSec);
+    CHECK(a.leading());
+    b.up = true;
+    sim.run(5 * kSec);
+    CHECK_EQ(leaderCount(all), 1);
+    CHECK(b.leading());
+    CHECK_EQ(f.elector->leaderIp(), b.ip);
+
+    // A fixed leader with the lowest address still outranks every candidate.
+    Sim sim2(8);
+    SimNode fixed(sim2, 1, 0, 0, kAlwaysLead, PropType::MegaTree, 1);
+    SimNode c(sim2, 9, 20, 4 * kSec, 6400);
+    std::vector<SimNode *> both{&fixed, &c};
+    sim2.run(60 * kSec);
+    CHECK_EQ(leaderCount(both), 1);
+    CHECK(fixed.leading());
+    CHECK_EQ(c.elector->takeovers(), 0u);
+}
+
+void testElectionLossy() {
+    printf("  election on a lossy network: no flapping\n");
+    Sim sim(9);
+    sim.loss = 0.30;
+    sim.broadcastLoss = 0.4;
+    std::vector<std::unique_ptr<SimNode>> owned;
+    std::vector<SimNode *> all;
+    for (int i = 0; i < 6; i++) {
+        owned.push_back(std::make_unique<SimNode>(sim, 2 + i, (i % 2 ? 1 : -1) * (10.0 + 4 * i),
+                                                  (i + 1) * 3 * kSec, i < 3 ? 200 : kNeverLead,
+                                                  PropType::Arch, i + 1));
+        all.push_back(owned.back().get());
+    }
+    // All boot together, so with 40% of beacons lost a few may claim before settling.
+    auto takeovers = [&]() {
+        uint32_t n = 0;
+        for (SimNode *s : all) {
+            n += s->elector->takeovers();
+        }
+        return n;
+    };
+    sim.run(20 * kSec);
+    uint32_t settled = takeovers();
+    int maxLeaders = 0, leaderless = 0;
+    sim.run(120 * kSec, [&]() {
+        int n = leaderCount(all);
+        maxLeaders = std::max(maxLeaders, n);
+        leaderless += n == 0;
+    });
+    printf("    %u claim(s) while settling, %u in the next 2 minutes\n", settled,
+           takeovers() - settled);
+    for (SimNode *s : all) {
+        CHECK_EQ(s->backwards, 0);
+    }
+    CHECK(owned[2]->leading());  // the highest-addressed candidate
+    CHECK_EQ(takeovers(), settled);
+    CHECK_EQ(maxLeaders, 1);
+    CHECK_EQ(leaderless, 0);
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -586,5 +861,8 @@ int main(int argc, char **argv) {
     testLateJoinerAndUnknownEffect();
     testLeaderOutageAndReboot();
     testFollowerReboot();
+    testElection();
+    testElectionSplitAndFixedLeader();
+    testElectionLossy();
     return check::finish("test_sim");
 }

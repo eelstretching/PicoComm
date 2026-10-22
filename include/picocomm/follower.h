@@ -58,6 +58,9 @@ class Follower {
     static constexpr uint64_t kJoinRetryUs = 1000000;
     static constexpr uint64_t kOrphanTimeoutUs = 10000000;
     static constexpr int kRecentCues = 8;
+    // A new leader whose BEACON shows a show time this close to ours took over and carried on the
+    // old show time (section 5): keep the clock running and just re-lock to the new leader.
+    static constexpr uint64_t kHandoverToleranceUs = 100000;
 
     enum class State : uint8_t {
         Searching,  // waiting for a beacon
@@ -82,6 +85,11 @@ class Follower {
     const ClockDiscipline &clock() const { return clock_; }
     uint64_t showTime(uint64_t localUs) const { return clock_.published().toShow(localUs); }
     uint32_t lastSyncDelayUs() const { return lastDelayUs_; }
+    // Starts the clock locked to a mapping we already trust (a leader stepping down passes its own
+    // show clock), so the first sync slews to the new leader instead of stepping, if they are close.
+    void seedClock(const ClockModel &model);
+    // Local time we last heard from the leader (WELCOME or SYNC_RESP).
+    uint64_t lastLeaderUs() const { return lastLeaderUs_; }
 
     struct Stats {
         uint32_t syncSamples = 0;
@@ -92,6 +100,7 @@ class Follower {
         uint32_t cuesLate = 0;
         uint32_t orphanings = 0;
         uint32_t leaderReboots = 0;
+        uint32_t handovers = 0;  // new leaders that carried on the show time
     };
     const Stats &stats() const { return stats_; }
 
@@ -102,11 +111,12 @@ class Follower {
         int32_t lateByUs;
     };
 
-    void handleBeacon(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port);
+    void handleBeacon(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port,
+                      uint64_t rxUs);
     void handleWelcome(const uint8_t *data, uint32_t ip, uint64_t rxUs);
     void handleSyncResp(const uint8_t *data, uint32_t ip, uint64_t rxUs);
     void handleCue(const Header &h, const uint8_t *data, uint32_t ip, uint64_t rxUs);
-    void leaderRebooted(uint32_t newGeneration);
+    void newLeader(const Beacon &b, uint64_t rxUs);
     void sendJoin(uint64_t now);
     void sendSyncReq();
     void sendStatus(uint64_t now);

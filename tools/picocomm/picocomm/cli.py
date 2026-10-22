@@ -52,6 +52,10 @@ _HEADINGS = ["node", "prop", "state", "effect", "cue", "sync rtt", "rssi", "fps"
              "heard", "address"]
 
 
+def _priority(p):
+    return "fixed" if p == wire.ALWAYS_LEAD else str(p)
+
+
 def cmd_watch(args):
     obs = _observer(args)
     try:
@@ -64,7 +68,8 @@ def cmd_watch(args):
                 wall = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(b.unix_time)) \
                     if b.unix_time else "no wall clock"
                 lines.append(f"leader {obs.leader[0]}  generation {b.generation:08x}  "
-                             f"scene {b.scene_id}  {b.follower_count} follower(s)  {wall}")
+                             f"scene {b.scene_id}  {b.follower_count} follower(s)  "
+                             f"priority {_priority(b.priority)}  {wall}")
             else:
                 why = "not listening for beacons with --leader" if obs.beacon_sock is None \
                     else "no beacon heard yet"

@@ -46,6 +46,7 @@ std::map<std::string, std::string> canonical() {
     b.unixTime = 1798761600;
     b.sceneId = 0x0a0b;
     b.followerCount = 7;
+    b.priority = 6400;
     encode(hdr(0x0102, kLeaderId), b, pkt);
     out["beacon"] = hex();
 
@@ -217,13 +218,14 @@ void testRoundTrips() {
     b.unixTime = 0xffffffff;
     b.sceneId = 65535;
     b.followerCount = 255;
+    b.priority = kAlwaysLead;
     encode(hdr(1, 0), b, pkt);
     CHECK(decodeHeader(pkt, kPacketSize, h));
     CHECK(h.type == PacketType::Beacon);
     decode(pkt, b2);
     CHECK(b2.generation == b.generation && b2.showTimeUs == b.showTimeUs &&
           b2.unixTime == b.unixTime && b2.sceneId == b.sceneId &&
-          b2.followerCount == b.followerCount);
+          b2.followerCount == b.followerCount && b2.priority == b.priority);
 
     Ack a, a2;
     a.ackedType = PacketType::Override;

@@ -54,12 +54,18 @@ Two radio gotchas that shape the protocol:
 
 ## 3. Roles
 
-- **Leader**: the one Pico with a trusted RTC (DS3231). It runs the *director* (the show script:
+- **Leader**: one Pico, chosen by election (section 5). It runs the *director* (the show script:
   what plays when, on which props), owns show time, keeps the roster of followers, and answers the
   laptop. The leader is also a prop (most likely the MegaTree); its own core 0 gets cues exactly like
   a follower's does, through the same code path.
 - **Follower**: every other prop. It finds the leader, keeps its clock locked to the leader's, and
   plays whatever it is cued to play.
+- **Candidate**: a prop that can lead (it has the show script, and ideally an RTC) but doesn't
+  insist. It follows like any other prop until the election says it should lead. Each candidate has
+  a **leader priority**, a number that means something: by convention its LED count, so the
+  MegaTree (6,400) beats an arch group (a few hundred). Priority 0 means "never lead" (a plain
+  follower), and `kAlwaysLead` (0xffffffff) is a fixed leader that never steps down, for the bench
+  or a laptop fake leader.
 - **Observer**: the laptop (or anything else running the Python tool). It can watch the roster and
   the clocks, and can send manual override cues through the leader. It never talks to followers
   directly, so the leader always knows the full state of the show.
@@ -73,12 +79,15 @@ joins. Prop types double as **groups** for targeting ("all arches").
 
 ### What "show time" is
 
-Show time is the leader's `time_us_64()`: microseconds since the leader booted, as a `uint64_t`.
-It only ever moves forward and never jumps, which is exactly what animations want. Wall-clock time
-(for "start the show at 5 pm" or the New Year countdown) comes from the leader's DS3231, and the
-leader's beacon carries "unix time U corresponds to show time T", so any node can convert. Each
-leader boot picks a random 32-bit **leader generation**, so followers can tell when the leader has
-rebooted and show time has started over.
+Show time is the leader's `time_us_64()` plus a fixed offset: microseconds, as a `uint64_t`. The
+first leader after everything powers on uses offset 0 (show time is time since it booted). A
+candidate that takes over from another leader sets its offset so that show time **carries on**
+from the clock it was following, so a handover doesn't make show time jump. Show time only ever
+moves forward and never jumps, which is exactly what animations want. Wall-clock time (for "start
+the show at 5 pm" or the New Year countdown) comes from the leader's DS3231, and the leader's beacon
+carries "unix time U corresponds to show time T", so any node can convert. Each time a node starts
+leading it picks a random 32-bit **leader generation**, so followers can tell that the leader
+changed, and (by comparing show times) whether show time started over.
 
 ### The sync exchange
 
@@ -132,8 +141,8 @@ reboots mid-effect can jump straight to the right place.
 ## 5. Discovery and membership
 
 1. The leader **broadcasts a BEACON** once a second to `255.255.255.255:7420`: its generation,
-   show time (informational only; broadcast delay is unknown), wall-clock time, current scene, and
-   follower count.
+   show time (informational only; broadcast delay is unknown), wall-clock time, current scene,
+   follower count, and leader priority.
 2. A follower that hears a beacon learns the leader's IP from the packet's source and sends a
    unicast **JOIN** with its board ID, prop type and index, firmware version, and effect catalog
    version.
@@ -151,6 +160,39 @@ router hands out, and a follower that boots late or reboots finds it within a se
 would work too, but needs everyone to agree on the range, and costs more packets. Multicast would
 also work but needs IGMP in lwIP and the CYW43's multicast filter configured, for no benefit over
 broadcast on a one-subnet network.
+
+### Electing the leader
+
+Any prop might have an RTC and the show script, so the leader isn't fixed at build time. The
+election runs on BEACONs alone, with no extra packet types. A node's **rank** is
+`(priority, IPv4 address)`: higher priority wins, and a tie goes to the higher address (unique on
+the show network, and already in every packet's source, so it costs no bytes).
+
+- **Listen first.** At boot a candidate follows for 3 seconds plus a random 0 to 1 s of jitter.
+  Beacons come once a second, so that's enough to hear a leader that's already running. If it heard
+  none, it starts leading. The jitter keeps boards powered on together from all claiming at once.
+- **Two leaders settle within a beacon.** A leader that hears a higher-ranked leader's BEACON steps
+  down and follows it. That covers boards booted together and a network split healing. A follower
+  always follows the highest-ranked leader it has heard lately.
+- **The best prop takes the show back.** A candidate that outranks the leader it is following takes
+  over once its clock is locked. So when the MegaTree reboots mid-show, an arch leads for a few
+  seconds, then the tree takes over again, carrying on the arch's show time.
+- **Taking over when the leader dies.** If a candidate hears nothing from the leader (no beacon, no
+  sync response) for 8 seconds plus its jitter, it starts leading. That's before followers would
+  orphan at 10 s, so the show keeps going. If several candidates are left, they may all claim, and
+  the "two leaders" rule leaves the highest-ranked one within a beacon.
+- **Show time carries on.** A node that takes over sets its show-time offset from its own locked
+  clock (section 4), so its BEACONs carry on the old show time. A follower that sees a new
+  generation whose beacon show time is within 100 ms of its own clock treats it as a **handover**:
+  it keeps its clock running, rejoins, and re-locks with an ordinary slew. A new generation far
+  from its clock is a reboot, as before: the clock is reset and re-locked with a step. A leader that
+  steps down likewise keeps its own show clock running until its first sync with the new leader.
+- **Fixed leaders.** Priority `kAlwaysLead` leads from boot and never steps down; priority 0 never
+  leads. A show with one fixed leader and the rest plain followers works exactly as before the
+  election existed.
+
+All of this lives in `Elector` (`include/picocomm/elector.h`), which owns a `Leader` or a
+`Follower` and switches between them, so the Pico glue and the simulator both get it for free.
 
 ## 6. Cues: telling props what to do
 
@@ -186,8 +228,11 @@ Followers never go dark because of the network:
 - No sync response for 10 seconds: the follower keeps running on its free-running clock and
   finishes the current cue's effect, then falls back to its own local playlist (the
   `RandomAnimator` each prop has today). Its status light can show "orphaned".
-- A beacon with a **new leader generation** means the leader rebooted: the follower rejoins and
-  re-locks its clock (a step is allowed this one time).
+- If the leader was a candidate's to replace, a candidate takes over after 8 s (section 5) and
+  carries on show time; followers rejoin it without a jump.
+- A beacon with a **new leader generation** whose show time is far from the follower's means the
+  leader rebooted and show time started over: the follower rejoins and re-locks its clock (a step
+  is allowed this one time).
 - A follower that reboots simply rejoins and gets the current scene's cue on join.
 
 ## 7. Wire format
@@ -213,7 +258,7 @@ there; followers and the laptop use any local port). One size means one receive 
 
 | Type | Name | Direction | Payload (offset: type field) |
 |---|---|---|---|
-| 1 | BEACON | leader to broadcast | 8: u32 generation; 12: u64 showTimeUs; 20: u32 unixTime (0 if unknown); 24: u16 sceneId; 26: u8 followerCount; 27 to 31: reserved |
+| 1 | BEACON | leader to broadcast | 8: u32 generation; 12: u64 showTimeUs; 20: u32 unixTime (0 if unknown); 24: u16 sceneId; 26: u8 followerCount; 27: u32 priority (0 never leads, 0xffffffff fixed leader); 31: reserved |
 | 2 | JOIN | follower to leader | 8: u8[8] boardId; 16: u8 propType; 17: u8 propIndex; 18: u16 fwVersion; 20: u16 catalogVersion; 22: u16 capabilities; 24 to 31: reserved |
 | 3 | WELCOME | leader to follower | 8: u32 generation; 12: u8 nodeId; 13: reserved; 14: u16 groupMask; 16: u8[8] boardId (echo); 24 to 31: reserved |
 | 4 | SYNC_REQ | follower or observer to leader | 8: u64 t1; 16 to 31: reserved |
@@ -301,6 +346,12 @@ Pull a follower's power mid-effect, reboot the leader, switch the router off for
 packet dropping in the firmware. Each should match section 6: followers keep playing, fall back to
 their local playlist, and rejoin cleanly, all visible in the laptop view.
 
+Election drills, with two or three boards running `sync_bench_candidate.uf2`: power them on
+together (exactly one should lead within about 5 s); pull the leader's power (another takes over
+in about 9 s, and the GPIO pulses on the rest stay lined up through it); plug it back in (the
+highest-ranked board takes the show back, again without the pulses stepping). The host simulator
+runs the same drills on every build (`testElection*` in `tests/test_sim.cpp`).
+
 ### Stage 4: the lawn
 
 The same router and settings go outside. The one new variable is range; check RSSI per prop in the
@@ -376,8 +427,8 @@ the heap, rather than trusting this estimate.
 
 ## 12. Open questions
 
-- Which prop is the leader? Probably the MegaTree, since it's the centerpiece and its board has the
-  DS3231, but the design doesn't care.
+- Which prop is the leader? Settled: elected (section 5). Every prop with the show script enters
+  with its LED count, so the MegaTree leads when it's up.
 - Do all props run the same frame rate? Frame-phase alignment (section 4) assumes a common rate, or
   rates that divide evenly (20/40/80 fps).
 - Should the director's show script be compiled into the leader's firmware, or loaded from the

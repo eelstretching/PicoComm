@@ -61,6 +61,7 @@ void Leader::onPacket(const uint8_t *data, size_t len, uint32_t srcIp, uint16_t 
     if (!decodeHeader(data, len, h)) {
         return;
     }
+    rxUs += (uint64_t)config_.showOffsetUs;  // everything below runs on show time
     switch (h.type) {
         case PacketType::Join:
             handleJoin(data, srcIp, srcPort, rxUs);
@@ -95,7 +96,7 @@ void Leader::handleSyncReq(const Header &h, const uint8_t *data, uint32_t ip, ui
     resp.t2 = rxUs;
     uint8_t pkt[kPacketSize];
     Header rh = header();
-    resp.t3 = transport_.nowUs();
+    resp.t3 = showTime();
     encode(rh, resp, pkt);
     transport_.send(ip, port, pkt);
 
@@ -179,7 +180,7 @@ void Leader::handleJoin(const uint8_t *data, uint32_t ip, uint16_t port, uint64_
     transport_.send(ip, port, pkt);
 
     // Catch the late joiner up on the current scene.
-    uint64_t now = transport_.nowUs();
+    uint64_t now = showTime();
     if (j.propType < 16) {
         if (haveSceneCue_[j.propType]) {
             queueCue(*m, sceneCue_[j.propType], sceneCue_[j.propType].atUs < now, now);
@@ -235,7 +236,7 @@ void Leader::handleQuery(const uint8_t *data, uint32_t ip, uint16_t port) {
     if (q.what != kQueryRoster) {
         return;
     }
-    uint64_t now = transport_.nowUs();
+    uint64_t now = showTime();
     int count = 1;
     for (const Member &m : members_) {
         if (m.used) {
@@ -326,7 +327,7 @@ void Leader::handleOverride(const Header &h, const uint8_t *data, uint32_t ip, u
 }
 
 uint16_t Leader::cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs) {
-    return cueAt(groupMask, spec, transport_.nowUs() + (uint64_t)leadMs * 1000);
+    return cueAt(groupMask, spec, showTime() + (uint64_t)leadMs * 1000);
 }
 
 uint16_t Leader::cueAt(uint16_t groupMask, const Cue &spec, uint64_t atShowUs) {
@@ -355,7 +356,7 @@ uint16_t Leader::cueAt(uint16_t groupMask, const Cue &spec, uint64_t atShowUs) {
     if ((uint8_t)config_.propType < 16 && (groupMask & groupBit(config_.propType))) {
         app_.deliverCue(c);
     }
-    uint64_t now = transport_.nowUs();
+    uint64_t now = showTime();
     for (Member &m : members_) {
         if (m.used && m.state != NodeState::Lost && m.propType < 16 &&
             (groupMask & (1u << m.propType))) {
@@ -410,13 +411,14 @@ void Leader::sendBeacon(uint64_t now) {
     b.sceneId = sceneId_;
     int n = activeFollowers();
     b.followerCount = (uint8_t)(n > 255 ? 255 : n);
+    b.priority = config_.priority;
     uint8_t pkt[kPacketSize];
     encode(header(), b, pkt);
     transport_.broadcast(kPort, pkt);
 }
 
 void Leader::poll() {
-    uint64_t now = transport_.nowUs();
+    uint64_t now = showTime();
     if (now >= nextBeaconUs_) {
         sendBeacon(now);
         nextBeaconUs_ = now + kBeaconIntervalUs;

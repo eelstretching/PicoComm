@@ -1,13 +1,15 @@
 // Bench firmware for stages 1 and 2 of the basement tests (docs/protocol-design.md, section 8).
 //
-// Built twice: sync_bench_leader and sync_bench_follower. Every board:
+// Built three times: sync_bench_leader, sync_bench_follower and sync_bench_candidate (enters the
+// leader election, so any number of boards can run it and one of them leads). Every board:
 // - pulses GP22 high for 1 ms at every whole second of show time, so a logic analyzer or the
 //   judge Pico can measure how closely the boards agree on the time;
 // - pulses GP21 high for 1 ms when a cue takes effect, so cue alignment can be measured the same
 //   way;
 // - prints protocol events and a status line every 10 s over USB serial.
 //
-// The leader also cues a test scene to everyone every 5 s (TestFlash in a rotating color).
+// Whichever board is leading also cues a test scene to everyone every 5 s (TestFlash in a rotating
+// color).
 // There are no LEDs yet: this is about the clocks and the cues.
 
 #include <cstdio>
@@ -51,13 +53,16 @@ int main() {
     }
 
     bench::getCredentials();
-    const bool isLeader = PICOCOMM_BENCH_LEADER;
-    printf("\nPicoComm sync bench: %s\n", isLeader ? "LEADER" : "follower");
+    const Role role = (Role)PICOCOMM_BENCH_ROLE;
+    printf("\nPicoComm sync bench: %s\n", role == Role::Leader     ? "LEADER"
+                                           : role == Role::Candidate ? "candidate"
+                                                                     : "follower");
 
     static const uint16_t effects[] = {(uint16_t)EffectId::None, (uint16_t)EffectId::SolidColor,
                                        (uint16_t)EffectId::TestFlash};
     NodeConfig cfg;
-    cfg.role = isLeader ? Role::Leader : Role::Follower;
+    cfg.role = role;
+    cfg.leaderPriority = 100;  // every candidate the same: the highest IP address leads
     cfg.propType = picocomm::PropType::Bench;
     cfg.fwVersion = kFwVersion;
     cfg.ssid = bench::ssid;
@@ -122,7 +127,7 @@ int main() {
         }
         gpio_put(kCuePin, show < cuePulseUntil);
 
-        if (isLeader && show >= nextScene) {
+        if (node.leading() && show >= nextScene) {
             nextScene = show + kSceneIntervalUs;
             static const uint8_t colors[][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}, {255, 255, 255}};
             Cue scene;
