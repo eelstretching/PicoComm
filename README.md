@@ -15,7 +15,7 @@ so that "everybody switch to Starlight at show time T" lands on the same frame e
 | `include/picocomm/effects.h` | The shared effect catalog (effect IDs and what their parameters mean) and prop types. |
 | `include/picocomm/cue_source.h` | `CueSource`: what an animation loop needs from PicoComm (show time, cues, frame reports). `Node` implements it; tests fake it. |
 | `conductor/` | `picocomm::Conductor`, a PicoLEDs `Animator` that paces frames on show time and switches effects on cues. |
-| `PicoLEDs/` | The PicoLEDs library, as a git submodule, for the Conductor and its tests. |
+| `PicoLEDs/` | The PicoLEDs library (`main`), as a git submodule, for the Conductor and its tests. |
 | `pico/` | The Pico glue: cyw43 + lwIP on core 1, show clock and cue queue for core 0 (`picocomm::pico::Node`). |
 | `firmware/` | Bench firmware for the basement tests: `sync_bench_*`, `led_bench_*` (the same on a strip of pixels, through a Conductor), and the `judge`. See [`firmware/README.md`](firmware/README.md). |
 | `tests/` | Host tests, including a whole-protocol simulation over a lossy network. |
