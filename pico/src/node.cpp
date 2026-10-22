@@ -16,8 +16,7 @@
 #include "lwip/pbuf.h"
 #include "lwip/udp.h"
 
-#include "picocomm/follower.h"
-#include "picocomm/leader.h"
+#include "picocomm/elector.h"
 
 // Linker symbols bounding the heap.
 extern "C" char __StackLimit, __bss_end__;
@@ -72,30 +71,29 @@ class LwipTransport : public Transport {
     }
 };
 
-class FollowerGlue : public FollowerApp {
+class ElectorGlue : public ElectorApp {
    public:
-    explicit FollowerGlue(Node &n) : node(n) {}
+    explicit ElectorGlue(Node &n) : node(n) {}
     bool knowsEffect(uint16_t effect) override { return node.knowsEffect(effect); }
     void deliverCue(const Cue &cue) override { node.pushCue(cue); }
     void clockChanged(const ClockModel &m) override { node.publishClock(m); }
-    void clockLost() override { node.unpublishClock(); }
+    void clockLost() override {
+        node.unpublishClock();
+        node.heardWallClock(0, 0);
+    }
+    void wallClockHeard(uint64_t unixUs, uint64_t showUs) override {
+        node.heardWallClock(unixUs, showUs);
+    }
     void fillStatus(Status &s) override { node.fillStatus(s); }
+    uint64_t unixTimeUs(uint64_t showUs) override { return node.unixTimeUs(showUs); }
     Node &node;
 };
 
-class LeaderGlue : public LeaderApp {
-   public:
-    explicit LeaderGlue(Node &n) : node(n) {}
-    void deliverCue(const Cue &cue) override { node.pushCue(cue); }
-    uint32_t unixTime(uint64_t showUs) override { return node.unixTime(showUs); }
-    void fillStatus(Status &s) override { node.fillStatus(s); }
-    Node &node;
-};
+uint32_t random32() { return get_rand_32(); }
 
-// Core 1's protocol objects. Constructed once, on core 1, after the network is up.
+// Core 1's protocol object. Constructed once, on core 1, after the network is up.
 LwipTransport transport;
-Follower *follower = nullptr;
-Leader *leader = nullptr;
+Elector *elector = nullptr;
 
 void onUdp(void *, udp_pcb *, pbuf *p, const ip_addr_t *addr, u16_t port) {
     // Receive timestamp first: it's the t2 (leader) or t4 (follower) of a sync exchange.
@@ -103,10 +101,8 @@ void onUdp(void *, udp_pcb *, pbuf *p, const ip_addr_t *addr, u16_t port) {
     uint8_t buf[kPacketSize];
     if (p->tot_len == kPacketSize && pbuf_copy_partial(p, buf, kPacketSize, 0) == kPacketSize) {
         uint32_t ip = ip4_addr_get_u32(ip_2_ip4(addr));
-        if (leader != nullptr) {
-            leader->onPacket(buf, kPacketSize, ip, port, rxUs);
-        } else if (follower != nullptr) {
-            follower->onPacket(buf, kPacketSize, ip, port, rxUs);
+        if (elector != nullptr) {
+            elector->onPacket(buf, kPacketSize, ip, port, rxUs);
         }
     }
     pbuf_free(p);
@@ -198,15 +194,23 @@ bool Node::cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs) {
 }
 
 void Node::setWallClock(uint32_t unixSeconds, uint64_t atShowUs) {
-    wallClock_.write({unixSeconds, atShowUs});
+    wallClock_.write({(uint64_t)unixSeconds * 1000000, atShowUs});
 }
 
-uint32_t Node::unixTime(uint64_t showUs) const {
-    WallClock w;
-    if (!wallClock_.read(w) || w.unixSeconds == 0) {
+uint64_t Node::unixTimeUs(uint64_t showUs) const {
+    WallClock own, heard;
+    bool haveOwn = wallClock_.read(own) && own.unixUs != 0;
+    bool haveHeard = heardClock_.read(heard) && heard.unixUs != 0;
+    const WallClock *w = nullptr;
+    if (leading()) {
+        w = haveOwn ? &own : (haveHeard ? &heard : nullptr);
+    } else {
+        w = haveHeard ? &heard : (haveOwn ? &own : nullptr);
+    }
+    if (w == nullptr) {
         return 0;
     }
-    return w.unixSeconds + (uint32_t)((int64_t)(showUs - w.showUs) / 1000000);
+    return w->unixUs + (showUs - w->showUs);
 }
 
 void Node::pushCue(const Cue &c) {
@@ -265,34 +269,27 @@ void Node::core1Main() {
     udp_bind(transport.pcb, IP_ANY_TYPE, kPort);
     udp_recv(transport.pcb, onUdp, nullptr);
 
-    static FollowerGlue followerGlue(*this);
-    static LeaderGlue leaderGlue(*this);
-    LogFn log = config_.logEvents ? logLine : nullptr;
-    if (config_.role == Role::Leader) {
-        LeaderConfig lc;
-        lc.generation = get_rand_32();
-        lc.propType = config_.propType;
-        lc.propIndex = config_.propIndex;
-        lc.log = log;
-        static Leader l(lc, transport, leaderGlue);
-        l.setOwnAddress(ip4_addr_get_u32(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA])));
-        leader = &l;
-        state_.store(NetState::Leading);
-        printf("[picocomm] leading, generation %08lx\n", (unsigned long)lc.generation);
-    } else {
-        FollowerConfig fc;
-        pico_unique_board_id_t id;
-        pico_get_unique_board_id(&id);
-        static_assert(sizeof(id.id) == 8, "board ID is 8 bytes");
-        memcpy(fc.boardId, id.id, 8);
-        fc.propType = config_.propType;
-        fc.propIndex = config_.propIndex;
-        fc.fwVersion = config_.fwVersion;
-        fc.log = log;
-        static Follower f(fc, transport, followerGlue);
-        follower = &f;
-        state_.store(NetState::Searching);
+    static ElectorGlue glue(*this);
+    ElectorConfig ec;
+    switch (config_.role) {
+        case Role::Leader: ec.priority = kAlwaysLead; break;
+        case Role::Follower: ec.priority = kNeverLead; break;
+        case Role::Candidate:
+            ec.priority = candidatePriority(config_.leaderPriority, config_.hasRtc);
+            break;
     }
+    pico_unique_board_id_t id;
+    pico_get_unique_board_id(&id);
+    static_assert(sizeof(id.id) == 8, "board ID is 8 bytes");
+    memcpy(ec.boardId, id.id, 8);
+    ec.propType = config_.propType;
+    ec.propIndex = config_.propIndex;
+    ec.fwVersion = config_.fwVersion;
+    ec.ownIp = ip4_addr_get_u32(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA]));
+    ec.random32 = random32;
+    ec.log = config_.logEvents ? logLine : nullptr;
+    static Elector e(ec, transport, glue);
+    elector = &e;
 
     uint64_t nextHousekeeping = 0;
     while (true) {
@@ -300,24 +297,25 @@ void Node::core1Main() {
         // within a loop iteration of its arrival.
         cyw43_arch_poll();
 
-        if (leader != nullptr) {
-            OutboundCue o;
-            while (queue_try_remove(&outbound_, &o)) {
-                leader->cue(o.groupMask, o.spec, o.leadMs);
+        OutboundCue o;
+        while (queue_try_remove(&outbound_, &o)) {
+            if (elector->cue(o.groupMask, o.spec, o.leadMs) == 0 && config_.logEvents) {
+                printf("[picocomm] not leading, dropped a cue from core 0\n");
             }
-            leader->poll();
-        } else {
-            follower->poll();
-            NetState s = NetState::Searching;
-            if (follower->orphaned()) {
+        }
+        elector->poll();
+        NetState s = NetState::Leading;
+        if (const Follower *f = elector->follower()) {
+            s = NetState::Searching;
+            if (f->orphaned()) {
                 s = NetState::Orphaned;
-            } else if (follower->state() == Follower::State::Joining) {
+            } else if (f->state() == Follower::State::Joining) {
                 s = NetState::Joining;
-            } else if (follower->state() == Follower::State::Joined) {
+            } else if (f->state() == Follower::State::Joined) {
                 s = NetState::Joined;
             }
-            state_.store(s, std::memory_order_relaxed);
         }
+        state_.store(s, std::memory_order_relaxed);
 
         uint64_t now = time_us_64();
         if (now >= nextHousekeeping) {

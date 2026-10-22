@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.13)
 #
 #   sync_bench_leader.uf2    leader: beacons, answers sync, cycles a test scene every 5 s
 #   sync_bench_follower.uf2  follower: joins, syncs, plays the test scenes
+#   sync_bench_candidate.uf2 enters the leader election: flash it on several boards, one leads
 #   led_bench_leader.uf2     the same scenes drawn on 100 pixels on GP2, by a Conductor
 #   led_bench_follower.uf2
 #   judge.uf2                a plain Pico (no WiFi needed) that timestamps the others' pulses
@@ -45,14 +46,14 @@ add_subdirectory(../pico picocomm)
 set(WIFI_SSID "" CACHE STRING "Show network SSID (empty: ask over USB at startup)")
 set(WIFI_PASSWORD "" CACHE STRING "Show network password (empty: ask over USB at startup)")
 
-foreach(role leader follower)
+# PICOCOMM_BENCH_ROLE is a picocomm::pico::Role: 0 leader, 1 follower, 2 candidate.
+set(role_leader 0)
+set(role_follower 1)
+set(role_candidate 2)
+foreach(role leader follower candidate)
     set(target sync_bench_${role})
     add_executable(${target} sync_bench/main.cpp)
-    if(role STREQUAL "leader")
-        target_compile_definitions(${target} PRIVATE PICOCOMM_BENCH_LEADER=1)
-    else()
-        target_compile_definitions(${target} PRIVATE PICOCOMM_BENCH_LEADER=0)
-    endif()
+    target_compile_definitions(${target} PRIVATE PICOCOMM_BENCH_ROLE=${role_${role}})
     target_compile_definitions(${target} PRIVATE
         WIFI_SSID="${WIFI_SSID}"
         WIFI_PASSWORD="${WIFI_PASSWORD}"

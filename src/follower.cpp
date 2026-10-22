@@ -36,7 +36,7 @@ void Follower::onPacket(const uint8_t *data, size_t len, uint32_t srcIp, uint16_
     }
     switch (h.type) {
         case PacketType::Beacon:
-            handleBeacon(h, data, srcIp, srcPort);
+            handleBeacon(h, data, srcIp, srcPort, rxUs);
             break;
         case PacketType::Welcome:
             handleWelcome(data, srcIp, rxUs);
@@ -52,14 +52,15 @@ void Follower::onPacket(const uint8_t *data, size_t len, uint32_t srcIp, uint16_
     }
 }
 
-void Follower::handleBeacon(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port) {
+void Follower::handleBeacon(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port,
+                            uint64_t rxUs) {
     if (h.src != kLeaderId) {
         return;
     }
     Beacon b;
     decode(data, b);
     if (haveGeneration_ && b.generation != generation_) {
-        leaderRebooted(b.generation);
+        newLeader(b, rxUs);
     } else if (state_ != State::Searching) {
         return;  // already joining or joined this leader
     }
@@ -71,16 +72,29 @@ void Follower::handleBeacon(const Header &h, const uint8_t *data, uint32_t ip, u
     sendJoin(transport_.nowUs());
 }
 
-void Follower::leaderRebooted(uint32_t newGeneration) {
-    log("leader rebooted (generation %08lx -> %08lx), rejoining", (unsigned long)generation_,
-        (unsigned long)newGeneration);
-    stats_.leaderReboots++;
-    // Show time started over: forget the old clock and the cue IDs, which will be reused.
+void Follower::newLeader(const Beacon &b, uint64_t rxUs) {
+    // A new generation: the leader rebooted, or another node took over. Either way the cue IDs
+    // start over, and the old samples were against a different clock.
     fit_.clear();
     burstActive_ = false;
     recentCount_ = 0;
     recentNext_ = 0;
     nodeId_ = kUnassignedId;
+
+    int64_t gap = clock_.locked() ? (int64_t)(b.showTimeUs - showTime(rxUs)) : INT64_MAX;
+    if (gap > -(int64_t)kHandoverToleranceUs && gap < (int64_t)kHandoverToleranceUs) {
+        // It carried on our show time: keep the clock running and re-lock to the new leader with
+        // an ordinary slew (or a step, if the first fit is far off after all).
+        log("new leader (generation %08lx -> %08lx) carried on show time, rejoining",
+            (unsigned long)generation_, (unsigned long)b.generation);
+        stats_.handovers++;
+        forceStep_ = false;
+        return;
+    }
+    log("leader rebooted (generation %08lx -> %08lx), rejoining", (unsigned long)generation_,
+        (unsigned long)b.generation);
+    stats_.leaderReboots++;
+    // Show time started over: forget the old clock.
     forceStep_ = true;
     if (clock_.locked()) {
         clock_.reset();
@@ -211,6 +225,11 @@ void Follower::poll() {
     if (clock_.update((int64_t)now)) {
         app_.clockChanged(clock_.published());
     }
+}
+
+void Follower::seedClock(const ClockModel &model) {
+    clock_.setTarget(model, (int64_t)transport_.nowUs(), true);
+    app_.clockChanged(clock_.published());
 }
 
 void Follower::finishBurst(uint64_t now) {

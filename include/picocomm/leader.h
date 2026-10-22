@@ -1,8 +1,9 @@
 // The leader side of the protocol (docs/protocol-design.md, sections 3 to 6 and 9): beacon, keep
 // the roster, answer SYNC requests, send cues with ACK and resend, and serve the laptop.
 //
-// Portable C++ with no pico-sdk dependency, like Follower. Show time is simply the leader's own
-// local clock (Transport::nowUs()).
+// Portable C++ with no pico-sdk dependency, like Follower. Show time is the leader's own local clock
+// (Transport::nowUs()) plus a fixed offset, which is 0 unless the leader took over from another one
+// and carries on its show time (Elector, section 5).
 
 #pragma once
 
@@ -21,6 +22,11 @@ struct LeaderConfig {
     // The leader is a prop too, and gets cues for its own group through LeaderApp::deliverCue.
     PropType propType = PropType::Unknown;
     uint8_t propIndex = 0;
+    // Sent in every BEACON so other candidates know whether to defer (section 5).
+    uint32_t priority = kAlwaysLead;
+    // Show time minus local time. Every time the leader handles (timers, SYNC_RESP timestamps,
+    // cue times) is show time.
+    int64_t showOffsetUs = 0;
     LogFn log = nullptr;
 };
 
@@ -31,6 +37,9 @@ class LeaderApp {
     virtual void deliverCue(const Cue &cue) = 0;
     // Wall-clock time at the given show time, as unix seconds, or 0 if not known (no RTC).
     virtual uint32_t unixTime(uint64_t /*showUs*/) { return 0; }
+    // The same in microseconds, for the BEACON's unixFraction. Override this one if the app knows
+    // the wall clock to better than a second.
+    virtual uint64_t unixTimeUs(uint64_t showUs) { return (uint64_t)unixTime(showUs) * 1000000; }
     // The leader's own row in the roster: fps, missedFrames, rssi, effect, cueId.
     virtual void fillStatus(Status &/*status*/) {}
 };
@@ -94,7 +103,7 @@ class Leader {
     uint16_t cue(uint16_t groupMask, const Cue &spec, uint32_t leadMs = kDefaultLeadMs);
     uint16_t cueAt(uint16_t groupMask, const Cue &spec, uint64_t atShowUs);
 
-    uint64_t showTime() { return transport_.nowUs(); }
+    uint64_t showTime() { return transport_.nowUs() + (uint64_t)config_.showOffsetUs; }
     uint32_t generation() const { return config_.generation; }
     // The leader's own address, for its roster row (lwIP order; see transport.h).
     void setOwnAddress(uint32_t ipv4) { ownIp_ = ipv4; }

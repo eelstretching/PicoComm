@@ -31,6 +31,15 @@ every board, all at the same show time.
 Measure how far apart the GP22 pulses land with a logic analyzer, or with the judge below. The
 design's pass bar is a 99th-percentile spread under 1 ms. GP21 measures cue alignment the same way.
 
+## sync_bench_candidate.uf2
+
+The same bench, but the board enters the leader election (design doc section 5) with priority
+100 instead of being a fixed leader or follower. Flash two or three boards with it (no leader image
+needed): one of them starts leading a few seconds after power-on and runs the test scene. Pull its
+power and another takes over about 9 s later; plug it back in and the higher-ranked board (same
+priority, so the higher IP address) takes the show back. The serial log says who leads and why,
+and the GP22 pulses should stay lined up through every handover.
+
 ## judge.uf2
 
 A plain Pico 2 or Pico 2 W (it doesn't use WiFi) that timestamps the other boards' pulses. Wire

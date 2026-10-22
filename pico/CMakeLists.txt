@@ -12,6 +12,7 @@ target_sources(picocomm_pico INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}/../src/sync.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/follower.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../src/leader.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../src/elector.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/node.cpp
 )
 

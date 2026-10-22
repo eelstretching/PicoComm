@@ -12,7 +12,7 @@ BOARD = bytes(range(1, 9))
 
 # Keep in step with canonical() in tests/test_wire.cpp: (payload, seq, src, flags).
 CANONICAL = {
-    "beacon": (wire.Beacon(0xDEADBEEF, 0x0123456789ABCDEF, 1798761600, 0x0A0B, 7),
+    "beacon": (wire.Beacon(0xDEADBEEF, 0x0123456789ABCDEF, 1798761600, 0x0A0B, 7, 6400, 0x80),
                0x0102, wire.LEADER_ID, 0),
     "join": (wire.Join(BOARD, 3, 2, 0x0105, 1, 0x8001), 1, wire.UNASSIGNED_ID, 0),
     "welcome": (wire.Welcome(0xDEADBEEF, 5, 0x0008, BOARD), 2, wire.LEADER_ID, 0),

@@ -14,6 +14,7 @@ add_library(picocomm_core STATIC
     src/sync.cpp
     src/follower.cpp
     src/leader.cpp
+    src/elector.cpp
 )
 target_include_directories(picocomm_core PUBLIC include)
 target_compile_options(picocomm_core PRIVATE -Wall -Wextra)
