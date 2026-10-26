@@ -42,6 +42,8 @@ class LeaderApp {
     virtual uint64_t unixTimeUs(uint64_t showUs) { return (uint64_t)unixTime(showUs) * 1000000; }
     // The leader's own row in the roster: fps, missedFrames, rssi, effect, cueId.
     virtual void fillStatus(Status &/*status*/) {}
+    // The leader's own FRAME_STATS for an observer. uptimeS is already filled in.
+    virtual void fillFrameStats(FrameStats &/*stats*/) {}
 };
 
 class Leader {
@@ -81,6 +83,8 @@ class Leader {
         uint64_t lastHeardUs = 0;
         bool hasStatus = false;
         Status status;
+        bool hasFrameStats = false;
+        FrameStats frameStats;
         uint32_t cuesSent = 0;
         uint32_t cuesLate = 0;
         uint32_t cuesMissed = 0;  // gave up resending
@@ -120,6 +124,8 @@ class Leader {
     void handleStatus(const Header &h, const uint8_t *data, uint32_t ip, uint64_t rxUs);
     void handleQuery(const uint8_t *data, uint32_t ip, uint16_t port);
     void handleOverride(const Header &h, const uint8_t *data, uint32_t ip, uint16_t port);
+    void handleFrameStats(const Header &h, const uint8_t *data, uint32_t ip, uint64_t rxUs);
+    void sendNextStats();
     Member *findMember(uint8_t nodeId, uint32_t ip);
     void heard(Member &m, uint64_t rxUs);
     void queueCue(Member &m, const Cue &c, bool catchUp, uint64_t now);
@@ -144,6 +150,20 @@ class Leader {
     uint16_t lastOverrideCueId_ = 0;
 
     Member members_[kMaxFollowers];
+    uint32_t cuesIssued_ = 0;
+
+    // An answer to QUERY(stats) on its way out: a FRAME_STATS and a CUE_STATS per prop, one packet
+    // per poll(), so that a SYNC_REQ arriving meanwhile is answered (and timestamped) between two
+    // of them instead of waiting behind the whole lot. A new QUERY(stats) starts over.
+    struct StatsReply {
+        bool active = false;
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        uint8_t nodeCount = 0;
+        int slot = -1;  // -1: the leader itself
+        bool cuePart = false;
+    };
+    StatsReply statsReply_;
 
     // The latest scene cue (effect, blackout, resume local) and brightness cue per group, resent
     // to a follower when it joins so a late joiner catches up.

@@ -8,6 +8,7 @@ Run each in its own terminal; --drop makes them lose packets on purpose.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import random
 import time
@@ -22,6 +23,16 @@ def _log(who: str, msg: str):
     print(f"{time.strftime('%H:%M:%S')} [{who}] {msg}", flush=True)
 
 
+def _fake_frame_stats(running_us: int, frame_us: int) -> wire.FrameStats:
+    """Plausible animation numbers for a fake running at 40 fps for running_us."""
+    jitter = random.randint(-300, 300)
+    return wire.FrameStats(
+        fps=40, avg_frame_us=frame_us, worst_frame_us=frame_us + 1500 + abs(jitter),
+        avg_step_us=frame_us * 2 // 3, avg_show_us=frame_us // 3,
+        temp_c=31 + random.randint(-1, 1), frame_count=running_us * 40 // 1_000_000,
+        missed_frames=running_us // 60_000_000)
+
+
 @dataclass
 class _Member:
     node_id: int
@@ -32,6 +43,8 @@ class _Member:
     state: int = wire.NodeState.JOINING
     last_heard_us: int = 0
     status: wire.Status | None = None
+    frame_stats: wire.FrameStats | None = None
+    cues: wire.CueStats = field(default_factory=wire.CueStats)
     pending: dict = field(default_factory=dict)  # cue_id -> [Cue, last_sent, give_up, catch_up]
 
 
@@ -53,6 +66,7 @@ class FakeLeader:
         self.boot_us = now_us()
         self.seq = 0
         self.next_cue_id = 1
+        self.cues_issued = 0
         self.scene_id = 0
         self.members: dict[bytes, _Member] = {}
         self.scene_cue: dict[int, wire.Cue] = {}
@@ -74,6 +88,7 @@ class FakeLeader:
         c = wire.Cue(self.next_cue_id, spec.kind, spec.transition, self.show_us() + lead_ms * 1000,
                      spec.effect, spec.transition_ms, spec.params)
         self.next_cue_id = self.next_cue_id % 0xFFFF + 1
+        self.cues_issued += 1
         self.scene_id += 1
         for g in range(16):
             if mask & (1 << g):
@@ -89,6 +104,7 @@ class FakeLeader:
         now = self.show_us()
         # [cue, last sent, give up at, catch-up (already due: lateness expected)]
         m.pending[c.cue_id] = [c, now, max(c.at_us, now) + self.GIVE_UP_US, c.at_us < now]
+        m.cues.cues_sent += 1
         self._send(c, m.addr, wire.FLAG_ACK_REQUESTED)
 
     def _member(self, hdr, addr):
@@ -124,14 +140,23 @@ class FakeLeader:
                 m.last_heard_us = show_rx
                 entry = m.pending.pop(p.cue_id, None)
                 if entry and p.status == wire.AckStatus.LATE and not entry[3]:
+                    m.cues.cues_late += 1
+                    m.cues.last_late_cue_id, m.cues.last_late_us = p.cue_id, p.late_by_us
                     _log("leader", f"node {m.node_id}: cue {p.cue_id} {p.late_by_us} us late")
                 elif entry and p.status == wire.AckStatus.UNKNOWN_EFFECT:
+                    m.cues.cues_unknown += 1
                     _log("leader", f"node {m.node_id}: cue {p.cue_id} unknown effect")
         elif hdr.type == t.STATUS:
             m = self._member(hdr, addr)
             if m:
                 m.last_heard_us, m.status = show_rx, p
-        elif hdr.type == t.QUERY:
+        elif hdr.type == t.FRAME_STATS:
+            m = self._member(hdr, addr)
+            if m:
+                m.last_heard_us, m.frame_stats = show_rx, p
+        elif hdr.type == t.QUERY and p.what == wire.QUERY_STATS:
+            self._send_stats(addr)
+        elif hdr.type == t.QUERY and p.what == wire.QUERY_ROSTER:
             rows = [wire.RosterEntry(0, self.prop_type, 0, wire.NodeState.SYNCED,
                                      effect=self.own_cue.effect, cue_id=self.own_cue.cue_id,
                                      fps=40)]
@@ -156,6 +181,17 @@ class FakeLeader:
                 _log("leader", f"override: cue {cue_id} {catalog.effect_name(p.effect)} "
                      f"groups {p.target_group_mask:04x} in {p.delay_ms or 300} ms")
             self._send(wire.Ack(t.OVERRIDE, wire.AckStatus.OK, hdr.seq, cue_id), addr)
+
+    def _send_stats(self, addr):
+        count = len(self.members) + 1
+        up = (now_us() - self.boot_us) // 1_000_000
+        own = _fake_frame_stats(now_us() - self.boot_us, 6500)
+        self._send(dataclasses.replace(own, node_id=0, node_count=count, uptime_s=up), addr)
+        self._send(wire.CueStats(0, count, cues_sent=self.cues_issued), addr)
+        for m in self.members.values():
+            f = m.frame_stats or wire.FrameStats(uptime_s=m.status.uptime_s if m.status else 0)
+            self._send(dataclasses.replace(f, node_id=m.node_id, node_count=count), addr)
+            self._send(dataclasses.replace(m.cues, node_id=m.node_id, node_count=count), addr)
 
     def tick(self):
         now = self.show_us()
@@ -185,6 +221,7 @@ class FakeLeader:
                 c, last, give_up, _ = entry
                 if now >= give_up:
                     del m.pending[cue_id]
+                    m.cues.cues_missed += 1
                     _log("leader", f"node {m.node_id}: gave up on cue {cue_id}")
                 elif now - last >= self.RESEND_US:
                     entry[1] = now
@@ -231,6 +268,7 @@ class FakeFollower:
         self.delivered: list[wire.Cue] = []
         self.next_burst = 0
         self.next_status = 0
+        self.next_frame_stats = 0
         self.last_leader_us = 0
         self.last_join = 0
         self.burst = None  # [start, sent, best]
@@ -325,6 +363,12 @@ class FakeFollower:
             self._send(wire.Status(self.generation, last.cue_id, last.effect,
                                    min(65535, self.last_delay), 0, 40, -60, 0, 200,
                                    (now_us() - self.t0) // 1_000_000))
+        if self.model is not None and now >= self.next_frame_stats:
+            self.next_frame_stats = now + self.STATUS_US
+            running = now_us() - self.t0
+            f = _fake_frame_stats(running, 4000 + 500 * self.prop_index)
+            f.node_id, f.uptime_s = self.node_id, running // 1_000_000
+            self._send(f)
         if now - self.last_leader_us > self.ORPHAN_US:
             _log("follower", "orphaned: no sync response for 10 s")
             self.joined, self.leader, self.node_id = False, None, wire.UNASSIGNED_ID

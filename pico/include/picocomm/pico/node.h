@@ -78,6 +78,9 @@ struct NodeConfig {
     // accepts every effect. The array must outlive the Node.
     const uint16_t *effects = nullptr;
     size_t effectCount = 0;
+    // Read the RP2350's on-chip temperature sensor (ADC) every couple of seconds on core 1, for
+    // FRAME_STATS. Turn it off if core 0 uses the ADC itself.
+    bool readTemperature = true;
     // Print protocol events (joins, losses, clock steps, late cues) over stdio.
     bool logEvents = true;
 };
@@ -110,6 +113,8 @@ class Node : public CueSource {
 
     // What core 0 is doing, sent to the leader in STATUS (and shown by `picocomm watch`).
     void reportFrame(uint8_t fps, uint16_t missedFrames, uint16_t effect, uint16_t cueId) override;
+    // Frame counts and times, sent to the leader in FRAME_STATS (and shown by `picocomm stats`).
+    void reportFrameStats(const FrameStats &stats) override { animStats_.write(stats); }
 
     // Whether this node is leading right now (a Candidate can start or stop at any time).
     bool leading() const { return state() == NetState::Leading; }
@@ -143,6 +148,7 @@ class Node : public CueSource {
     void unpublishClock() { locked_.store(false); }
     void pushCue(const Cue &c);
     void fillStatus(Status &s) const;
+    void fillFrameStats(FrameStats &s) const;
     bool knowsEffect(uint16_t effect) const;
     void heardWallClock(uint64_t unixUs, uint64_t showUs) { heardClock_.write({unixUs, showUs}); }
     const NodeConfig &config() const { return config_; }
@@ -159,6 +165,8 @@ class Node : public CueSource {
     std::atomic<uint32_t> cuesDropped_{0};
     std::atomic<uint32_t> frameStats_{0};  // fps | missedFrames << 8
     std::atomic<uint32_t> playing_{0};     // effect | cueId << 16
+    SeqLock<FrameStats> animStats_;        // from core 0
+    std::atomic<int8_t> tempC_{kNoTemperature};
     struct WallClock {
         uint64_t unixUs;  // 0: unknown
         uint64_t showUs;

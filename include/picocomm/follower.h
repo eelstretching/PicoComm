@@ -44,6 +44,8 @@ class FollowerApp {
     // Fills in what only the prop knows: fps, missedFrames, rssi, freeRamKB, and effect/cueId if it
     // tracks what's actually on screen (they default to the last cue accepted).
     virtual void fillStatus(Status &/*status*/) {}
+    // FRAME_STATS for the leader (and an observer's QUERY(stats)). uptimeS is already filled in.
+    virtual void fillFrameStats(FrameStats &/*stats*/) {}
 };
 
 class Follower {
@@ -120,6 +122,7 @@ class Follower {
     void sendJoin(uint64_t now);
     void sendSyncReq();
     void sendStatus(uint64_t now);
+    void sendFrameStats(uint64_t now);
     void sendAck(uint16_t ackedSeq, const RecentCue &r);
     void finishBurst(uint64_t now);
     void orphan(uint64_t now);
@@ -147,6 +150,7 @@ class Follower {
     int burstSent_ = 0;
     bool burstActive_ = false;
     uint64_t nextStatusUs_ = 0;
+    uint64_t nextFrameStatsUs_ = 0;  // same interval as STATUS, half a period after it
     uint64_t lastSampleUs_ = 0;
     uint32_t lastDelayUs_ = 0;
 

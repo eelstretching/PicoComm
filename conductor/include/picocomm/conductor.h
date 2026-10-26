@@ -40,6 +40,8 @@ class Conductor : public Animator {
     // A clock jump bigger than this (locking to the leader, a leader reboot) restarts the current
     // effect rather than letting it try to catch up on the time.
     static constexpr uint64_t kRestartJumpUs = 1000000;
+    // How often frame counts and times go to the CueSource (FRAME_STATS), on this Pico's clock.
+    static constexpr uint64_t kStatsIntervalUs = 1000000;
 
     Conductor(Canvas *canvas, CueSource &source, int fps = kDefaultFPS);
     ~Conductor() override;
@@ -81,6 +83,7 @@ class Conductor : public Animator {
     bool play(uint16_t effect, const Cue &cue, uint64_t frameTime);
     void playLocal(int index, uint64_t frameTime);
     void updateBrightness(uint64_t frameTime);
+    void reportFrameStats();
 
     CueSource &source_;
     Registered effects_[kMaxEffects];
@@ -100,6 +103,9 @@ class Conductor : public Animator {
 
     bool locked_ = false;
     uint64_t lastClock_ = 0;
+
+    uint64_t worstFrameUs_ = 0;  // since the last stats report
+    uint64_t nextStatsUs_ = 0;
 
     // Brightness ramp: from rampFrom_ at rampStartUs_ to rampTo_ over rampUs_ (show time).
     bool ramping_ = false;

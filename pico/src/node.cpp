@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "hardware/adc.h"
 #include "pico/cyw43_arch.h"
 #include "pico/multicore.h"
 #include "pico/rand.h"
@@ -85,11 +86,23 @@ class ElectorGlue : public ElectorApp {
         node.heardWallClock(unixUs, showUs);
     }
     void fillStatus(Status &s) override { node.fillStatus(s); }
+    void fillFrameStats(FrameStats &s) override { node.fillFrameStats(s); }
     uint64_t unixTimeUs(uint64_t showUs) override { return node.unixTimeUs(showUs); }
     Node &node;
 };
 
 uint32_t random32() { return get_rand_32(); }
+
+// The RP2350 die temperature from its on-chip sensor, in whole degrees C (datasheet formula; good
+// to a few degrees, which is plenty for "is the box cooking?").
+int8_t readDieTempC() {
+    adc_select_input(ADC_TEMPERATURE_CHANNEL_NUM);
+    float volts = adc_read() * 3.3f / 4096.0f;
+    float c = 27.0f - (volts - 0.706f) / 0.001721f;
+    if (c < -127.0f) c = -127.0f;
+    if (c > 127.0f) c = 127.0f;
+    return (int8_t)(c < 0 ? c - 0.5f : c + 0.5f);
+}
 
 // Core 1's protocol object. Constructed once, on core 1, after the network is up.
 LwipTransport transport;
@@ -247,6 +260,16 @@ void Node::fillStatus(Status &s) const {
     s.freeRamKB = freeRamKB();
 }
 
+void Node::fillFrameStats(FrameStats &s) const {
+    uint32_t uptime = s.uptimeS;
+    FrameStats f;
+    if (animStats_.read(f)) {
+        s = f;
+    }
+    s.uptimeS = uptime;
+    s.tempC = tempC_.load(std::memory_order_relaxed);
+}
+
 void Node::core1Main() {
     // cyw43 is initialized here so its interrupts land on core 1, never on the renderer's core.
     bool radioOk = cyw43_arch_init() == 0;
@@ -257,6 +280,10 @@ void Node::core1Main() {
         while (true) {
             tight_loop_contents();
         }
+    }
+    if (config_.readTemperature) {
+        adc_init();
+        adc_set_temp_sensor_enabled(true);
     }
     cyw43_arch_enable_sta_mode();
     while (!connectWifi(config_)) {
@@ -323,6 +350,9 @@ void Node::core1Main() {
             int32_t rssi = 0;
             if (cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0) {
                 rssi_.store((int8_t)(rssi < -128 ? -128 : rssi), std::memory_order_relaxed);
+            }
+            if (config_.readTemperature) {
+                tempC_.store(readDieTempC(), std::memory_order_relaxed);
             }
             if (cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA) != CYW43_LINK_UP) {
                 // The protocol objects keep their state; followers free-run on their last fit

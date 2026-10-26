@@ -141,6 +141,25 @@ class Observer:
                 break
         return [rows[i] for i in sorted(rows)]
 
+    def stats(self, timeout: float = 0.5) -> dict[int, tuple]:
+        """One QUERY(stats). Returns {node_id: (FrameStats or None, CueStats or None)} for what
+        arrived; the leader paces its answer, a packet per trip round its network loop."""
+        self.send(wire.Query(wire.QUERY_STATS))
+        frames, cues = {}, {}
+        count = None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for hdr, payload, _, _ in self.poll(min(0.05, deadline - time.monotonic())):
+                if hdr.type == wire.PacketType.FRAME_STATS:
+                    frames[payload.node_id] = payload
+                    count = payload.node_count
+                elif hdr.type == wire.PacketType.CUE_STATS:
+                    cues[payload.node_id] = payload
+                    count = payload.node_count
+            if count is not None and len(frames) == count and len(cues) == count:
+                break
+        return {n: (frames.get(n), cues.get(n)) for n in sorted(set(frames) | set(cues))}
+
     def sync_burst(self, count: int = 4, spacing: float = 0.02,
                    window: float = 0.26) -> SyncSample | None:
         """A burst of SYNC_REQs; returns the sample with the smallest round trip."""

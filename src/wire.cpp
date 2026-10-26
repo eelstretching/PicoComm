@@ -23,7 +23,7 @@ bool decodeHeader(const uint8_t *in, size_t len, Header &h) {
     if (len != kPacketSize || in[0] != kMagic0 || in[1] != kMagic1 || in[2] != kProtocolVersion) {
         return false;
     }
-    if (in[3] < (uint8_t)PacketType::Beacon || in[3] > (uint8_t)PacketType::Override) {
+    if (in[3] < (uint8_t)PacketType::Beacon || in[3] > (uint8_t)PacketType::CueStats) {
         return false;
     }
     h.type = (PacketType)in[3];
@@ -234,6 +234,58 @@ void decode(const uint8_t *in, Override &p) {
     p.effect = get16(in + 14);
     p.transitionMs = get16(in + 16);
     memcpy(p.params, in + 18, 8);
+}
+
+void encode(Header h, const FrameStats &p, uint8_t *out) {
+    begin(h, PacketType::FrameStats, out);
+    out[8] = p.nodeId;
+    out[9] = p.fps;
+    put16(out + 10, p.avgFrameUs);
+    put16(out + 12, p.worstFrameUs);
+    put16(out + 14, p.avgStepUs);
+    put16(out + 16, p.avgShowUs);
+    out[18] = (uint8_t)p.tempC;
+    out[19] = p.nodeCount;
+    put32(out + 20, p.frameCount);
+    put32(out + 24, p.missedFrames);
+    put32(out + 28, p.uptimeS);
+}
+
+void decode(const uint8_t *in, FrameStats &p) {
+    p.nodeId = in[8];
+    p.fps = in[9];
+    p.avgFrameUs = get16(in + 10);
+    p.worstFrameUs = get16(in + 12);
+    p.avgStepUs = get16(in + 14);
+    p.avgShowUs = get16(in + 16);
+    p.tempC = (int8_t)in[18];
+    p.nodeCount = in[19];
+    p.frameCount = get32(in + 20);
+    p.missedFrames = get32(in + 24);
+    p.uptimeS = get32(in + 28);
+}
+
+void encode(Header h, const CueStats &p, uint8_t *out) {
+    begin(h, PacketType::CueStats, out);
+    out[8] = p.nodeId;
+    out[9] = p.nodeCount;
+    put16(out + 10, p.lastLateCueId);
+    put32(out + 12, p.cuesSent);
+    put32(out + 16, p.cuesLate);
+    put32(out + 20, p.cuesMissed);
+    put32(out + 24, p.cuesUnknown);
+    put32(out + 28, (uint32_t)p.lastLateUs);
+}
+
+void decode(const uint8_t *in, CueStats &p) {
+    p.nodeId = in[8];
+    p.nodeCount = in[9];
+    p.lastLateCueId = get16(in + 10);
+    p.cuesSent = get32(in + 12);
+    p.cuesLate = get32(in + 16);
+    p.cuesMissed = get32(in + 20);
+    p.cuesUnknown = get32(in + 24);
+    p.lastLateUs = (int32_t)get32(in + 28);
 }
 
 }  // namespace picocomm

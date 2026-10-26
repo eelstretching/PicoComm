@@ -55,6 +55,12 @@ class FakeSource : public CueSource {
         reportedCue = cueId;
         reports++;
     }
+    void reportFrameStats(const FrameStats &s) override {
+        lastStats = s;
+        statsReports++;
+    }
+    FrameStats lastStats;
+    int statsReports = 0;
 };
 
 // An effect that fills the canvas with its color, and counts how many of its kind are alive.
@@ -323,11 +329,34 @@ static void testClockJump() {
     CHECK(conductor.getMissedFrames() <= 1);
 }
 
+static void testFrameStats() {
+    printf("frame stats\n");
+    Canvas *canvas = makeCanvas();
+    FakeSource source;
+    {
+        Conductor conductor(canvas, source);
+        setup(conductor);
+        conductor.addLocal(kRed, 60000);
+        conductor.init();
+        for (int i = 0; i < 200; i++) {  // 5 s at 40 fps
+            conductor.step();
+        }
+        // About once a second, the first one on the first frame.
+        CHECK(source.statsReports >= 5 && source.statsReports <= 6);
+        CHECK_EQ(source.lastStats.fps, 40);
+        CHECK(source.lastStats.frameCount >= 160 && source.lastStats.frameCount <= 200);
+        CHECK(source.lastStats.missedFrames <= 1);
+        CHECK(source.lastStats.worstFrameUs >= source.lastStats.avgFrameUs ||
+              source.lastStats.avgFrameUs == 0);
+    }
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     testLocalPlaylist();
     testCueTiming();
     testBrightness();
     testClockJump();
+    testFrameStats();
     return check::finish("test_conductor");
 }

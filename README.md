@@ -19,7 +19,7 @@ so that "everybody switch to Starlight at show time T" lands on the same frame e
 | `pico/` | The Pico glue: cyw43 + lwIP on core 1, show clock and cue queue for core 0 (`picocomm::pico::Node`). |
 | `firmware/` | Bench firmware for the basement tests: `sync_bench_*`, `led_bench_*` (the same on a strip of pixels, through a Conductor), and the `judge`. See [`firmware/README.md`](firmware/README.md). |
 | `tests/` | Host tests, including a whole-protocol simulation over a lossy network. |
-| `tools/picocomm/` | The laptop tool (`picocomm watch`, `cue`, `clock`, `log`, and fake Picos). See [`tools/picocomm/README.md`](tools/picocomm/README.md). |
+| `tools/picocomm/` | The laptop tool (`picocomm watch`, `stats`, `cue`, `clock`, `log`, and fake Picos). See [`tools/picocomm/README.md`](tools/picocomm/README.md). |
 | `tools/wifi_survey/` | Signal-strength survey firmware for walking the lawn. |
 
 ## Building and testing
@@ -112,6 +112,13 @@ PicoLEDs' `Animation.h`) so they run at the same speed whatever the frame rate.
 - **Limits**: 16 followers per leader, 4 unacknowledged cues per follower, an 8-deep cue queue to
   core 0 (the design said 4; a scene change can carry several cues). The leader stops resending a
   cue 2 s after its time.
+
+- **Stats for the laptop**: the Conductor hands its frame counts and times to the Node once a
+  second; a prop that doesn't use the Conductor can call `node.reportFrameStats()` itself (or not:
+  the observer then sees just uptime and temperature). The die temperature is read on core 1 with
+  the ADC; set `NodeConfig::readTemperature = false` if core 0 uses the ADC. Old firmware ignores
+  the new packets, so a mix of old and new boards works; the stats are just missing for the old
+  ones.
 
 - **Conductor**: transitions other than a cut (fade through black, crossfade) play as cuts for
   now. A cue for an effect the prop doesn't have is skipped and the current effect keeps playing.

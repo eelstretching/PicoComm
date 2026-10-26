@@ -1,6 +1,7 @@
 """picocomm: the laptop's view of the show network (docs/protocol-design.md, section 9).
 
     picocomm watch                          live table of every prop
+    picocomm stats [--once]                 frame counts and times, cue tallies, temperatures
     picocomm clock                          sync the laptop's clock to show time, print quality
     picocomm cue --group arches --effect leap --in 500ms
     picocomm log roster.csv                 the watch table, once a second, to CSV
@@ -82,6 +83,90 @@ def cmd_watch(args):
                 lines.append("(no answer to QUERY)")
             # Clear the screen and redraw.
             print("\033[H\033[J" + "\n".join(lines), flush=True)
+            time.sleep(max(0.0, args.interval - (time.monotonic() - started)))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        obs.close()
+
+
+def _ms(us: int) -> str:
+    return f"{us / 1000:.1f}" if us else "-"
+
+
+def _uptime(s: int) -> str:
+    if s >= 86400:
+        return f"{s // 86400}d{s % 86400 // 3600:02}h"
+    if s >= 3600:
+        return f"{s // 3600}h{s % 3600 // 60:02}m"
+    return f"{s // 60}m{s % 60:02}s"
+
+
+_STATS_HEADINGS = ["node", "prop", "effect", "fps", "frames", "frame ms", "worst ms", "step ms",
+                   "show ms", "busy", "missed", "uptime", "temp", "cues", "late", "lost",
+                   "refused", "rssi"]
+
+
+def _stats_row(node_id, f, c, r) -> list[str]:
+    if r is not None:
+        prop = catalog.prop_name(r.prop_type) + (f" #{r.prop_index}" if r.prop_index else "")
+        effect = catalog.effect_name(r.effect) if r.cue_id or r.effect else "-"
+        rssi = str(r.rssi) if r.rssi else "-"
+    else:
+        prop, effect, rssi = "?", "-", "-"
+    if node_id == wire.LEADER_ID:
+        prop += " (leader)"
+    f = f or wire.FrameStats()
+    c = c or wire.CueStats()
+    # How much of each frame's time core 0 spends computing and sending it.
+    busy = f"{f.avg_frame_us * f.fps / 10_000:.0f}%" if f.fps and f.avg_frame_us else "-"
+    return [
+        str(node_id), prop, effect,
+        str(f.fps) if f.fps else "-",
+        str(f.frame_count) if f.frame_count else "-",
+        _ms(f.avg_frame_us), _ms(f.worst_frame_us), _ms(f.avg_step_us), _ms(f.avg_show_us),
+        busy, str(f.missed_frames),
+        _uptime(f.uptime_s) if f.uptime_s else "-",
+        "-" if f.temp_c == wire.NO_TEMPERATURE else f"{f.temp_c} C",
+        str(c.cues_sent),
+        str(c.cues_late) + (f" ({c.last_late_us / 1000:.1f} ms)" if c.cues_late else ""),
+        str(c.cues_missed), str(c.cues_unknown), rssi,
+    ]
+
+
+def _stats_text(obs: Observer) -> str:
+    stats = obs.stats()
+    roster = {r.node_id: r for r in obs.roster()}
+    lines = []
+    b = obs.beacon
+    if b:
+        wall = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(b.unix_time)) \
+            if b.unix_time else "no wall clock"
+        lines.append(f"leader {obs.leader[0]}  {b.follower_count} follower(s)  "
+                     f"scene {b.scene_id}  show time {b.show_time_us / 1e6:.0f} s  {wall}")
+    else:
+        lines.append(f"leader {obs.leader[0]}")
+    if not stats:
+        lines.append("(no answer to QUERY(stats); is the leader's firmware older than FRAME_STATS?)")
+        return "\n".join(lines)
+    table = [_STATS_HEADINGS] + [_stats_row(n, f, c, roster.get(n)) for n, (f, c) in stats.items()]
+    widths = [max(len(row[i]) for row in table) for i in range(len(_STATS_HEADINGS))]
+    for row in table:
+        lines.append("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip())
+    return "\n".join(lines)
+
+
+def cmd_stats(args):
+    obs = _observer(args)
+    try:
+        if args.once:
+            if obs.beacon_sock is not None and obs.beacon is None:
+                obs.poll(1.1)  # catch a beacon for the header line
+            print(_stats_text(obs))
+            return
+        while True:
+            started = time.monotonic()
+            print("\033[H\033[J" + _stats_text(obs), flush=True)
             time.sleep(max(0.0, args.interval - (time.monotonic() - started)))
     except KeyboardInterrupt:
         pass
@@ -211,6 +296,12 @@ def main(argv=None):
     s = sub.add_parser("watch", help="live table of every prop")
     s.add_argument("--interval", type=float, default=1.0)
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("stats", help="frame counts and times, cue tallies, temperatures")
+    s.add_argument("--once", action="store_true", help="print one table and exit")
+    s.add_argument("--interval", type=float, default=2.0,
+                   help="seconds between refreshes (followers report every 2 s)")
+    s.set_defaults(func=cmd_stats)
 
     s = sub.add_parser("clock", help="sync to show time and print the quality")
     s.add_argument("--count", type=int, default=0, help="bursts to run (default: until Ctrl-C)")

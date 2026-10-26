@@ -40,6 +40,8 @@ enum class PacketType : uint8_t {
     Query = 9,
     RosterEntry = 10,
     Override = 11,
+    FrameStats = 12,
+    CueStats = 13,
 };
 
 enum class CueKind : uint8_t {
@@ -72,6 +74,10 @@ enum class NodeState : uint8_t {
 
 // QUERY "what" values.
 constexpr uint8_t kQueryRoster = 1;
+constexpr uint8_t kQueryStats = 2;  // a FRAME_STATS and a CUE_STATS per prop
+
+// FRAME_STATS tempC when the board can't tell.
+constexpr int8_t kNoTemperature = -128;
 
 struct Header {
     PacketType type = PacketType::Beacon;
@@ -189,6 +195,37 @@ struct Override {
     uint8_t params[8] = {};
 };
 
+// How a prop's animation loop is doing: the numbers PicoLEDs' Animator::printStats() prints, plus
+// the board's die temperature. Each follower sends its own to the leader every couple of seconds;
+// the leader answers an observer's QUERY(stats) with one per prop, its own first (nodeId 0).
+struct FrameStats {
+    uint8_t nodeId = 0;
+    uint8_t fps = 0;            // the frame rate it's paced at
+    uint16_t avgFrameUs = 0;    // step + show, averaged since the animator started
+    uint16_t worstFrameUs = 0;  // the slowest frame in the last second
+    uint16_t avgStepUs = 0;     // computing the frame
+    uint16_t avgShowUs = 0;     // sending it to the LEDs
+    int8_t tempC = kNoTemperature;
+    // In the leader's answer, how many props it is answering for; 0 from a follower.
+    uint8_t nodeCount = 0;
+    uint32_t frameCount = 0;
+    uint32_t missedFrames = 0;
+    uint32_t uptimeS = 0;
+};
+
+// The leader's bookkeeping of the cues it sent one follower, for an observer's QUERY(stats). Row 0
+// (the leader itself) has the number of cues the leader has issued in cuesSent.
+struct CueStats {
+    uint8_t nodeId = 0;
+    uint8_t nodeCount = 0;
+    uint16_t lastLateCueId = 0;
+    uint32_t cuesSent = 0;
+    uint32_t cuesLate = 0;     // acknowledged after their time
+    uint32_t cuesMissed = 0;   // never acknowledged: gave up resending, or dropped
+    uint32_t cuesUnknown = 0;  // refused: effect not on that prop
+    int32_t lastLateUs = 0;    // how late lastLateCueId was
+};
+
 // Encoders: write the header (type filled in from the payload) and payload into exactly
 // kPacketSize bytes. Reserved bytes are zeroed.
 void encode(Header h, const Beacon &p, uint8_t *out);
@@ -202,6 +239,8 @@ void encode(Header h, const Status &p, uint8_t *out);
 void encode(Header h, const Query &p, uint8_t *out);
 void encode(Header h, const RosterEntry &p, uint8_t *out);
 void encode(Header h, const Override &p, uint8_t *out);
+void encode(Header h, const FrameStats &p, uint8_t *out);
+void encode(Header h, const CueStats &p, uint8_t *out);
 
 // Checks length, magic and version and reads the header. Returns false for anything that isn't a
 // PicoComm v1 packet (or has an unknown type), which callers should silently drop.
@@ -219,6 +258,8 @@ void decode(const uint8_t *in, Status &p);
 void decode(const uint8_t *in, Query &p);
 void decode(const uint8_t *in, RosterEntry &p);
 void decode(const uint8_t *in, Override &p);
+void decode(const uint8_t *in, FrameStats &p);
+void decode(const uint8_t *in, CueStats &p);
 
 // Little-endian helpers, exposed for tests.
 inline void put16(uint8_t *p, uint16_t v) {

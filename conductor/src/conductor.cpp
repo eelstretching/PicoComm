@@ -223,7 +223,42 @@ bool Conductor::step() {
 
     updateBrightness(frame);
     source_.reportFrame((uint8_t)getFPS(), (uint16_t)getMissedFrames(), effect_, cueId_);
-    return Animator::step();
+    bool more = Animator::step();
+    reportFrameStats();
+    return more;
+}
+
+namespace {
+
+// Microseconds into a u16 field. An average over no frames yet is NaN, which comes out as 0.
+uint16_t clamp16(float us) {
+    if (!(us > 0.0f)) {
+        return 0;
+    }
+    return us >= 65535.0f ? 65535 : (uint16_t)(us + 0.5f);
+}
+
+}  // namespace
+
+void Conductor::reportFrameStats() {
+    if (frameWatch.lastTime > worstFrameUs_) {
+        worstFrameUs_ = frameWatch.lastTime;
+    }
+    uint64_t now = time_us_64();
+    if (now < nextStatsUs_) {
+        return;
+    }
+    nextStatsUs_ = now + kStatsIntervalUs;
+    FrameStats s;
+    s.fps = (uint8_t)getFPS();
+    s.avgFrameUs = clamp16(getAverageFrameTimeUS());
+    s.worstFrameUs = clamp16((float)worstFrameUs_);
+    s.avgStepUs = clamp16(getAverageStepTimeUS());
+    s.avgShowUs = clamp16(getAverageShowTimeUS());
+    s.frameCount = getFrameCount();
+    s.missedFrames = getMissedFrames();
+    source_.reportFrameStats(s);
+    worstFrameUs_ = 0;
 }
 
 }  // namespace picocomm

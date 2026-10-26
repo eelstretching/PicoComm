@@ -81,6 +81,9 @@ void Leader::onPacket(const uint8_t *data, size_t len, uint32_t srcIp, uint16_t 
         case PacketType::Override:
             handleOverride(h, data, srcIp, srcPort);
             break;
+        case PacketType::FrameStats:
+            handleFrameStats(h, data, srcIp, rxUs);
+            break;
         default:
             break;  // not for the leader (including our own beacons coming back)
     }
@@ -238,19 +241,88 @@ void Leader::handleStatus(const Header &h, const uint8_t *data, uint32_t ip, uin
     m->hasStatus = true;
 }
 
+void Leader::handleFrameStats(const Header &h, const uint8_t *data, uint32_t ip, uint64_t rxUs) {
+    Member *m = findMember(h.src, ip);
+    if (m == nullptr) {
+        return;
+    }
+    heard(*m, rxUs);
+    decode(data, m->frameStats);
+    m->frameStats.nodeId = m->nodeId;
+    m->frameStats.nodeCount = 0;
+    m->hasFrameStats = true;
+}
+
+void Leader::sendNextStats() {
+    StatsReply &r = statsReply_;
+    while (r.slot >= 0 && r.slot < kMaxFollowers && !members_[r.slot].used) {
+        r.slot++;
+    }
+    if (r.slot >= kMaxFollowers) {
+        r.active = false;
+        return;
+    }
+    uint8_t pkt[kPacketSize];
+    if (!r.cuePart) {
+        FrameStats f;
+        if (r.slot < 0) {
+            f.uptimeS = (uint32_t)(transport_.nowUs() / 1000000);
+            app_.fillFrameStats(f);
+            f.nodeId = kLeaderId;
+        } else {
+            const Member &m = members_[r.slot];
+            if (m.hasFrameStats) {
+                f = m.frameStats;
+            } else if (m.hasStatus) {
+                f.uptimeS = m.status.uptimeS;  // a follower from before FRAME_STATS
+            }
+            f.nodeId = m.nodeId;
+        }
+        f.nodeCount = r.nodeCount;
+        encode(header(), f, pkt);
+    } else {
+        CueStats c;
+        if (r.slot < 0) {
+            c.cuesSent = cuesIssued_;
+        } else {
+            const Member &m = members_[r.slot];
+            c.nodeId = m.nodeId;
+            c.cuesSent = m.cuesSent;
+            c.cuesLate = m.cuesLate;
+            c.cuesMissed = m.cuesMissed;
+            c.cuesUnknown = m.cuesUnknown;
+            c.lastLateCueId = m.lastLateCueId;
+            c.lastLateUs = m.lastLateUs;
+        }
+        c.nodeCount = r.nodeCount;
+        encode(header(), c, pkt);
+        r.slot++;
+    }
+    r.cuePart = !r.cuePart;
+    transport_.send(r.ip, r.port, pkt);
+}
+
 void Leader::handleQuery(const uint8_t *data, uint32_t ip, uint16_t port) {
     Query q;
     decode(data, q);
-    if (q.what != kQueryRoster) {
-        return;
-    }
-    uint64_t now = showTime();
     int count = 1;
     for (const Member &m : members_) {
         if (m.used) {
             count++;
         }
     }
+    if (q.what == kQueryStats) {
+        statsReply_ = StatsReply();
+        statsReply_.active = true;
+        statsReply_.ip = ip;
+        statsReply_.port = port;
+        statsReply_.nodeCount = (uint8_t)count;
+        return;  // poll() sends it
+    }
+    if (q.what != kQueryRoster) {
+        return;
+    }
+    uint64_t now = showTime();
 
     // Row 0 is the leader itself.
     Status own;
@@ -345,6 +417,7 @@ uint16_t Leader::cueAt(uint16_t groupMask, const Cue &spec, uint64_t atShowUs) {
         nextCueId_ = 1;  // 0 means "no cue" (the follower's own ResumeLocal on orphaning)
     }
     c.atUs = atShowUs;
+    cuesIssued_++;
     bool brightness = c.kind == CueKind::Brightness;
     if (!brightness) {
         sceneId_++;
@@ -432,6 +505,9 @@ void Leader::poll() {
     if (now >= nextBeaconUs_) {
         sendBeacon(now);
         nextBeaconUs_ = now + kBeaconIntervalUs;
+    }
+    if (statsReply_.active) {
+        sendNextStats();
     }
     for (Member &m : members_) {
         if (!m.used) {
