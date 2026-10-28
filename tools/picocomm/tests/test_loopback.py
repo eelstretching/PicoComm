@@ -55,6 +55,20 @@ class LoopbackTest(unittest.TestCase):
                 err = f.show_us() - leader.show_us()
                 self.assertLess(abs(err), 1000, f"follower clock off by {err} us")
 
+            # Stats: a FRAME_STATS and a CUE_STATS for every prop, the leader first.
+            stats = obs.stats()
+            for _ in range(3):
+                if len(stats) == 3 and all(f and c for f, c in stats.values()):
+                    break
+                stats = obs.stats()
+            self.assertEqual(sorted(stats), [r.node_id for r in rows])
+            for node_id, (f, c) in stats.items():
+                self.assertEqual(f.node_count, 3)
+                self.assertEqual(f.fps, 40)
+                self.assertGreater(f.frame_count, 0, f"node {node_id} has no frame stats")
+                self.assertNotEqual(f.temp_c, wire.NO_TEMPERATURE)
+                self.assertIsNotNone(c)
+
             # The laptop can sync too.
             s = obs.sync_burst()
             self.assertIsNotNone(s)

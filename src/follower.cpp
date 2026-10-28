@@ -116,6 +116,7 @@ void Follower::handleWelcome(const uint8_t *data, uint32_t ip, uint64_t rxUs) {
         // Start syncing right away; the first burst locks the clock.
         nextBurstUs_ = rxUs;
         nextStatusUs_ = rxUs + kStatusIntervalUs;
+        nextFrameStatsUs_ = nextStatusUs_ + kStatusIntervalUs / 2;
     }
     nodeId_ = w.nodeId;
     state_ = State::Joined;
@@ -217,6 +218,10 @@ void Follower::poll() {
             sendStatus(now);
             nextStatusUs_ = now + kStatusIntervalUs;
         }
+        if (clock_.locked() && now >= nextFrameStatsUs_) {
+            sendFrameStats(now);
+            nextFrameStatsUs_ = now + kStatusIntervalUs;
+        }
         if (now - lastLeaderUs_ > kOrphanTimeoutUs) {
             orphan(now);
         }
@@ -312,6 +317,17 @@ void Follower::sendStatus(uint64_t now) {
     app_.fillStatus(s);
     uint8_t pkt[kPacketSize];
     encode(header(), s, pkt);
+    transport_.send(leaderIp_, leaderPort_, pkt);
+}
+
+void Follower::sendFrameStats(uint64_t now) {
+    FrameStats f;
+    f.uptimeS = (uint32_t)(now / 1000000);
+    app_.fillFrameStats(f);
+    f.nodeId = nodeId_;
+    f.nodeCount = 0;
+    uint8_t pkt[kPacketSize];
+    encode(header(), f, pkt);
     transport_.send(leaderIp_, leaderPort_, pkt);
 }
 

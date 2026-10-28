@@ -29,4 +29,5 @@ target_link_libraries(picocomm_pico INTERFACE
     pico_unique_id
     pico_util
     pico_cyw43_arch_lwip_poll
+    hardware_adc
 )

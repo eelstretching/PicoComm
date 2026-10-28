@@ -153,6 +153,38 @@ std::map<std::string, std::string> canonical() {
     encode(hdr(9, kObserverId), o, pkt);
     out["override"] = hex();
 
+    Query qs;
+    qs.what = kQueryStats;
+    encode(hdr(10, kObserverId), qs, pkt);
+    out["query_stats"] = hex();
+
+    FrameStats f;
+    f.nodeId = 5;
+    f.fps = 40;
+    f.avgFrameUs = 4321;
+    f.worstFrameUs = 12345;
+    f.avgStepUs = 3000;
+    f.avgShowUs = 1200;
+    f.tempC = -5;
+    f.nodeCount = 3;
+    f.frameCount = 3456000;
+    f.missedFrames = 0x01020304;
+    f.uptimeS = 86400;
+    encode(hdr(11, kLeaderId), f, pkt);
+    out["frame_stats"] = hex();
+
+    CueStats cs;
+    cs.nodeId = 5;
+    cs.nodeCount = 3;
+    cs.lastLateCueId = 0x0102;
+    cs.cuesSent = 1000;
+    cs.cuesLate = 3;
+    cs.cuesMissed = 1;
+    cs.cuesUnknown = 0x0a0b0c0d;
+    cs.lastLateUs = -2500;
+    encode(hdr(12, kLeaderId), cs, pkt);
+    out["cue_stats"] = hex();
+
     return out;
 }
 
@@ -269,6 +301,25 @@ void testRoundTrips() {
     decode(pkt, o2);
     CHECK(o2.targetGroupMask == 0xffff && o2.kind == CueKind::Blackout && o2.params[7] == 0x99);
 
+    FrameStats f, f2;
+    f.tempC = kNoTemperature;
+    f.uptimeS = 0xffffffff;
+    f.worstFrameUs = 65535;
+    encode(hdr(7, 3), f, pkt);
+    CHECK(decodeHeader(pkt, kPacketSize, h));
+    CHECK(h.type == PacketType::FrameStats);
+    decode(pkt, f2);
+    CHECK(f2.tempC == kNoTemperature && f2.uptimeS == 0xffffffff && f2.worstFrameUs == 65535);
+
+    CueStats c, c2;
+    c.lastLateUs = INT32_MIN;
+    c.cuesSent = 0xffffffff;
+    encode(hdr(8, 0), c, pkt);
+    CHECK(decodeHeader(pkt, kPacketSize, h));
+    CHECK(h.type == PacketType::CueStats);
+    decode(pkt, c2);
+    CHECK(c2.lastLateUs == INT32_MIN && c2.cuesSent == 0xffffffff);
+
     // Reserved bytes are zero.
     Query q;
     encode(hdr(6, kObserverId), q, pkt);
@@ -296,7 +347,7 @@ void testRejects() {
     memcpy(bad, pkt, kPacketSize);
     bad[3] = 0;
     CHECK(!decodeHeader(bad, kPacketSize, h));
-    bad[3] = 12;
+    bad[3] = 14;
     CHECK(!decodeHeader(bad, kPacketSize, h));
 }
 

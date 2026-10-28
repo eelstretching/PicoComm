@@ -185,6 +185,11 @@ class SimLeader : public Endpoint, public LeaderApp {
     }
     void tick() override { leader->poll(); }
     void deliverCue(const Cue &c) override { delivered.push_back({c, sim_.now}); }
+    void fillFrameStats(FrameStats &s) override {
+        s.fps = 40;
+        s.avgFrameUs = 9000;
+        s.frameCount = 777;
+    }
 
     std::unique_ptr<Leader> leader;
     std::vector<Delivered> delivered;
@@ -228,6 +233,12 @@ class SimFollower : public Endpoint, public FollowerApp {
         s.fps = 40;
         s.rssi = -60;
     }
+    void fillFrameStats(FrameStats &s) override {
+        s.fps = 40;
+        s.avgFrameUs = 5000;
+        s.frameCount = (uint32_t)(s.uptimeS * 40);
+        s.tempC = 31;
+    }
     // True-time error of this follower's show clock against the leader's, in microseconds.
     int64_t errorUs(SimLeader &l) const {
         return (int64_t)(follower->showTime(localAt(sim_.now)) - l.localAt(sim_.now));
@@ -260,14 +271,24 @@ class SimObserver : public Endpoint {
             Ack a;
             decode(pkt, a);
             acks.push_back(a);
+        } else if (h.type == PacketType::FrameStats) {
+            FrameStats f;
+            decode(pkt, f);
+            frameStats.push_back(f);
+        } else if (h.type == PacketType::CueStats) {
+            CueStats c;
+            decode(pkt, c);
+            cueStats.push_back(c);
         }
     }
     void tick() override {}
-    void query(uint32_t leaderIp) {
+    void query(uint32_t leaderIp, uint8_t what = kQueryRoster) {
         uint8_t pkt[kPacketSize];
         Header h;
         h.src = kObserverId;
-        encode(h, Query(), pkt);
+        Query q;
+        q.what = what;
+        encode(h, q, pkt);
         send(leaderIp, kPort, pkt);
     }
     void override(uint32_t leaderIp, const Override &o) {
@@ -280,6 +301,8 @@ class SimObserver : public Endpoint {
     }
     std::vector<RosterEntry> roster;
     std::vector<Ack> acks;
+    std::vector<FrameStats> frameStats;
+    std::vector<CueStats> cueStats;
 };
 
 Cue effectCue(EffectId e) {
@@ -427,6 +450,71 @@ void testSyncAndCues() {
     if (obs.acks.size() == 2) {
         CHECK_EQ(obs.acks[1].cueId, obs.acks[0].cueId);
     }
+}
+
+// An observer asking for stats ten times a second (ten times what `picocomm stats` does) gets a
+// FRAME_STATS and a CUE_STATS for every prop, and the followers' clocks stay as good as ever.
+void testObserverStats() {
+    printf("  observer stats\n");
+    Sim sim(seedBase + 7);
+    SimLeader leader(sim, 1, 0, 1 * kSec, 0x5151);
+    SimFollower a(sim, 2, +22, 3 * kSec, PropType::Arch, 1);
+    SimFollower b(sim, 3, -17, 50 * kSec, PropType::Arch, 2);
+    SimFollower c(sim, 4, +9, 7 * kSec, PropType::Topper, 1);
+    std::vector<SimFollower *> all = {&a, &b, &c};
+    sim.run(20 * kSec);
+    for (int i = 0; i < 5; i++) {
+        leader.leader->cue(groupBit(PropType::Arch), effectCue(EffectId::Leap));
+        sim.run(1 * kSec);
+    }
+
+    SimObserver obs(sim, 9);
+    obs.query(leader.ip, kQueryStats);
+    sim.run(200000);
+    CHECK_EQ(obs.frameStats.size(), 4u);
+    CHECK_EQ(obs.cueStats.size(), 4u);
+    std::sort(obs.frameStats.begin(), obs.frameStats.end(),
+              [](const FrameStats &x, const FrameStats &y) { return x.nodeId < y.nodeId; });
+    std::sort(obs.cueStats.begin(), obs.cueStats.end(),
+              [](const CueStats &x, const CueStats &y) { return x.nodeId < y.nodeId; });
+    if (obs.frameStats.size() == 4 && obs.cueStats.size() == 4) {
+        CHECK_EQ(obs.frameStats[0].nodeId, kLeaderId);
+        CHECK_EQ(obs.frameStats[0].frameCount, 777u);
+        CHECK_EQ(obs.frameStats[0].avgFrameUs, 9000);
+        CHECK(obs.frameStats[0].uptimeS >= 25);
+        CHECK_EQ(obs.cueStats[0].cuesSent, 5u);
+        for (int i = 1; i < 4; i++) {
+            const FrameStats &f = obs.frameStats[i];
+            CHECK_EQ(f.nodeId, i);
+            CHECK_EQ(f.nodeCount, 4);
+            CHECK_EQ(f.fps, 40);
+            CHECK_EQ(f.tempC, 31);
+            CHECK(f.uptimeS > 20);
+            CHECK(f.frameCount > 0);
+        }
+        // Arches got the five Leap cues; the topper got none.
+        CHECK_EQ(obs.cueStats[1].cuesSent, 5u);
+        CHECK_EQ(obs.cueStats[2].cuesSent, 5u);
+        CHECK_EQ(obs.cueStats[3].cuesSent, 0u);
+        CHECK_EQ(obs.cueStats[1].cuesMissed, 0u);
+    }
+
+    int64_t worst = 0;
+    int ms = 0;
+    sim.run(20 * kSec, [&]() {
+        if (++ms % 100 == 0) {
+            obs.query(leader.ip, kQueryStats);
+        }
+        for (SimFollower *f : all) {
+            if (f->follower->locked()) {
+                int64_t e = f->errorUs(leader);
+                worst = std::max(worst, e < 0 ? -e : e);
+            }
+        }
+    });
+    printf("    worst clock error with stats queries every 100 ms: %lld us\n", (long long)worst);
+    CHECK(worst < 500);
+    CHECK(obs.frameStats.size() > 4u * 150);
 }
 
 void testLossyNetwork() {
@@ -953,6 +1041,7 @@ int main(int argc, char **argv) {
         seedBase = (uint32_t)atoi(seed);
     }
     testSyncAndCues();
+    testObserverStats();
     testLossyNetwork();
     testLateJoinerAndUnknownEffect();
     testLeaderOutageAndReboot();

@@ -29,6 +29,9 @@ FLAG_ACK_REQUESTED = 0x01
 NEVER_LEAD = 0
 ALWAYS_LEAD = 0xFFFFFFFF
 QUERY_ROSTER = 1
+QUERY_STATS = 2  # a FRAME_STATS and a CUE_STATS per prop
+
+NO_TEMPERATURE = -128  # FRAME_STATS temp_c when the board can't tell
 
 _HEADER = struct.Struct("<2sBBHBB")
 
@@ -45,6 +48,8 @@ class PacketType(IntEnum):
     QUERY = 9
     ROSTER_ENTRY = 10
     OVERRIDE = 11
+    FRAME_STATS = 12
+    CUE_STATS = 13
 
 
 class CueKind(IntEnum):
@@ -191,6 +196,36 @@ class Override:
     params: bytes = bytes(8)
 
 
+@dataclass
+class FrameStats:
+    """How a prop's animation loop is doing (PicoLEDs' Animator::printStats numbers)."""
+    node_id: int = 0
+    fps: int = 0             # the frame rate it's paced at
+    avg_frame_us: int = 0    # step + show, averaged since the animator started
+    worst_frame_us: int = 0  # slowest frame in the last second
+    avg_step_us: int = 0
+    avg_show_us: int = 0
+    temp_c: int = NO_TEMPERATURE  # RP2350 die temperature
+    node_count: int = 0      # in the leader's answer: how many props it's answering for
+    frame_count: int = 0
+    missed_frames: int = 0
+    uptime_s: int = 0
+
+
+@dataclass
+class CueStats:
+    """The leader's tally of the cues it sent one prop. Row 0 (the leader) has the number of cues
+    it has issued in cues_sent."""
+    node_id: int = 0
+    node_count: int = 0
+    last_late_cue_id: int = 0
+    cues_sent: int = 0
+    cues_late: int = 0
+    cues_missed: int = 0
+    cues_unknown: int = 0
+    last_late_us: int = 0
+
+
 # Payload layouts, bytes 8 to 31, in dataclass field order. Each is exactly 24 bytes.
 _PAYLOADS: dict[int, tuple[type, struct.Struct]] = {
     PacketType.BEACON: (Beacon, struct.Struct("<IQIHBIB")),
@@ -204,6 +239,8 @@ _PAYLOADS: dict[int, tuple[type, struct.Struct]] = {
     PacketType.QUERY: (Query, struct.Struct("<B23x")),
     PacketType.ROSTER_ENTRY: (RosterEntry, struct.Struct("<BBBBHHHHbBH4sBB2x")),
     PacketType.OVERRIDE: (Override, struct.Struct("<HBBHHH8s6x")),
+    PacketType.FRAME_STATS: (FrameStats, struct.Struct("<BBHHHHbBIII")),
+    PacketType.CUE_STATS: (CueStats, struct.Struct("<BBHIIIIi")),
 }
 _TYPE_OF = {cls: t for t, (cls, _) in _PAYLOADS.items()}
 

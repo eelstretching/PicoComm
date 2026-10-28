@@ -287,10 +287,14 @@ there; followers and the laptop use any local port). One size means one receive 
 | 9 | QUERY | observer to leader | 8: u8 what (1 = roster); 9 to 31: reserved |
 | 10 | ROSTER_ENTRY | leader to observer | 8: u8 nodeId; 9: u8 propType; 10: u8 propIndex; 11: u8 state; 12: u16 lastHeardMs; 14: u16 effect; 16: u16 cueId; 18: u16 syncDelayUs; 20: i8 rssi; 21: u8 fps; 22: u16 missedFrames; 24: u32 ipv4; 28: u8 entryIndex; 29: u8 entryCount; 30 to 31: reserved |
 | 11 | OVERRIDE | observer to leader | 8: u16 targetGroupMask; 10: u8 kind; 11: u8 transition; 12: u16 delayMs; 14: u16 effect; 16: u16 transitionMs; 18: u8[8] params; 26 to 31: reserved |
+| 12 | FRAME_STATS | follower to leader, leader to observer | 8: u8 nodeId; 9: u8 fps; 10: u16 avgFrameUs; 12: u16 worstFrameUs (last second); 14: u16 avgStepUs; 16: u16 avgShowUs; 18: i8 tempC (-128 unknown); 19: u8 nodeCount (in the leader's answer; 0 from a follower); 20: u32 frameCount; 24: u32 missedFrames; 28: u32 uptimeS |
+| 13 | CUE_STATS | leader to observer | 8: u8 nodeId; 9: u8 nodeCount; 10: u16 lastLateCueId; 12: u32 cuesSent (row 0: cues the leader issued); 16: u32 cuesLate; 20: u32 cuesMissed; 24: u32 cuesUnknown; 28: i32 lastLateUs |
 
 Enumerations: CUE `kind` is 1 effect, 2 brightness (target in params[0], ramp over transitionMs),
 3 blackout, 4 resume local playlist. `transition` is 0 cut, 1 fade through black, 2 crossfade.
-ACK `status` is 0 ok, 1 unknown effect, 2 late, 3 stale generation. Roster `state` is 1 joining,
+ACK `status` is 0 ok, 1 unknown effect, 2 late, 3 stale generation. QUERY `what` is 1 roster
+(a ROSTER_ENTRY per prop) or 2 stats (a FRAME_STATS and a CUE_STATS per prop, the leader's own
+first as node 0, sent one packet per pass of the leader's network loop). Roster `state` is 1 joining,
 2 synced, 3 stale, 4 lost.
 
 There's no authentication: WPA2 on the show network is the fence. If that ever matters, a
@@ -388,6 +392,13 @@ leader.
 - **`picocomm clock`**: the laptop runs the same sync exchange against the leader, so it knows
   show time too. That lets it timestamp everything it logs in show time, and plot per-prop sync
   quality over a night.
+- **`picocomm stats`**: sends QUERY(stats) every 2 s and shows how each prop's animation loop is
+  doing: the numbers PicoLEDs' `Animator::printStats()` prints (frames drawn, average and worst
+  frame time, step and show time, missed frames), how busy core 0 is, uptime, the RP2350's die
+  temperature, and the leader's tally of cues sent, late, lost and refused per prop. `--once`
+  prints one table. Followers send their FRAME_STATS to the leader every 2 s (a second after their
+  STATUS), so the leader always has an answer ready, and answers a packet at a time so that a
+  SYNC_REQ arriving meanwhile isn't kept waiting behind it.
 - **`picocomm cue --group arches --effect leap --in 500ms`**: sends an OVERRIDE; the leader turns
   it into ordinary cues for the targets, so overrides are scheduled, retried, and logged like
   everything else.

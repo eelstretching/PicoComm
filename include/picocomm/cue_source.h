@@ -19,6 +19,9 @@ class CueSource {
     // What's on screen, for the leader's roster.
     virtual void reportFrame(uint8_t fps, uint16_t missedFrames, uint16_t effect,
                              uint16_t cueId) = 0;
+    // How the animation loop is doing (frame counts and times), for an observer's QUERY(stats).
+    // Every second or so is plenty. nodeId, nodeCount, uptimeS and tempC are filled in later.
+    virtual void reportFrameStats(const FrameStats & /*stats*/) {}
 };
 
 }  // namespace picocomm

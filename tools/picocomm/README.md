@@ -15,6 +15,7 @@ Join the show network's WiFi first. The leader is found from its beacon; `--lead
 | Command | What it does |
 |---|---|
 | `picocomm watch` | Live table of every prop: state, effect, cue, sync round trip, RSSI, fps, missed frames, last heard. |
+| `picocomm stats` | How each prop's animation loop is doing: frames, average and worst frame time, step and show time, how busy core 0 is, missed frames, uptime, die temperature, and the leader's tally of cues sent, late, lost and refused. `--once` prints one table and exits. |
 | `picocomm clock` | Syncs the laptop to show time and prints round trip, offset and drift every 2 s. |
 | `picocomm cue --group arches --effect leap --in 500ms` | Sends an override through the leader, which cues the targets like any other cue. Also `--rgb 255,0,0`, `--params`, `--kind blackout`, `--transition crossfade --transition-time 800ms`. |
 | `picocomm log roster.csv` | Writes the watch table to CSV once a second, stamped with show time. |
@@ -31,6 +32,7 @@ python3 -m picocomm --port 7420 fake-leader --beacon-to 127.0.0.1:7421,127.0.0.1
 python3 -m picocomm fake-follower --listen-port 7421 --prop arch --index 1
 python3 -m picocomm fake-follower --listen-port 7422 --prop minitree --unknown leap
 python3 -m picocomm --leader 127.0.0.1 watch
+python3 -m picocomm --leader 127.0.0.1 stats --once
 python3 -m picocomm --leader 127.0.0.1 cue --group arches --effect cylon --in 1s
 ```
 

@@ -32,6 +32,11 @@ CANONICAL = {
     "override": (wire.Override(0x0008, wire.CueKind.EFFECT, wire.Transition.FADE_THROUGH_BLACK,
                                500, 0x0200, 800, bytes(range(0xB0, 0xB8))),
                  9, wire.OBSERVER_ID, 0),
+    "query_stats": (wire.Query(wire.QUERY_STATS), 10, wire.OBSERVER_ID, 0),
+    "frame_stats": (wire.FrameStats(5, 40, 4321, 12345, 3000, 1200, -5, 3, 3456000, 0x01020304,
+                                    86400), 11, wire.LEADER_ID, 0),
+    "cue_stats": (wire.CueStats(5, 3, 0x0102, 1000, 3, 1, 0x0A0B0C0D, -2500), 12,
+                  wire.LEADER_ID, 0),
 }
 
 
@@ -72,7 +77,7 @@ class WireTest(unittest.TestCase):
         self.assertIsNone(wire.decode(good + b"\0"))
         self.assertIsNone(wire.decode(b"XC" + good[2:]))
         self.assertIsNone(wire.decode(good[:2] + b"\x02" + good[3:]))  # future version
-        self.assertIsNone(wire.decode(good[:3] + b"\x0c" + good[4:]))  # unknown type
+        self.assertIsNone(wire.decode(good[:3] + b"\x0e" + good[4:]))  # unknown type
 
 
 if __name__ == "__main__":
